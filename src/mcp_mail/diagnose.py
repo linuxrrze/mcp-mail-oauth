@@ -86,10 +86,27 @@ def check_claims(claims: dict, *, issuer: str, audience: str, username_claim: st
     return failures
 
 
-def introspect(issuer: str, token: str, client_id: str, client_secret: str) -> dict:
-    discovery = httpx2.get(f"{issuer}/.well-known/openid-configuration", timeout=10).json()
+KEYCLOAK_OIDC_PATH = "/protocol/openid-connect/"
+
+
+def introspection_endpoint(settings) -> str:
+    """Keycloak's introspection URL, reached the way the server reaches Keycloak.
+
+    If an internal URL is configured (OIDC_JWKS_URI or OIDC_TOKEN_ENDPOINT,
+    for containers that can't reach the public issuer), derive it from that,
+    since all Keycloak endpoints share .../protocol/openid-connect/. Otherwise
+    read it from the issuer's discovery document.
+    """
+    for url in (settings.oidc_jwks_uri, settings.oidc_token_endpoint):
+        if url and KEYCLOAK_OIDC_PATH in url:
+            return url.split(KEYCLOAK_OIDC_PATH)[0] + KEYCLOAK_OIDC_PATH + "token/introspect"
+    discovery = httpx2.get(f"{settings.oidc_issuer}/.well-known/openid-configuration", timeout=10).json()
+    return discovery["introspection_endpoint"]
+
+
+def introspect(endpoint: str, token: str, client_id: str, client_secret: str) -> dict:
     resp = httpx2.post(
-        discovery["introspection_endpoint"], data={"token": token},
+        endpoint, data={"token": token},
         auth=(client_id, client_secret), timeout=10,
     )
     resp.raise_for_status()
@@ -172,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             secret = getpass.getpass("Client secret: ")
         try:
-            result = introspect(settings.oidc_issuer, mail_credential, args.introspect_client_id, secret)
+            result = introspect(introspection_endpoint(settings), mail_credential, args.introspect_client_id, secret)
         except httpx2.HTTPError as exc:
             print(f"{FAIL} introspection request failed: {exc}")
             failures.append("introspection")

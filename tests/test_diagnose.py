@@ -53,3 +53,14 @@ def test_missing_secret_without_terminal_fails_clearly(monkeypatch, tmp_path, ma
 
     assert diagnose.main(["--token-file", str(token_file), "--introspect-client-id", "dovecot"]) == 2
     assert "INTROSPECT_CLIENT_SECRET" in capsys.readouterr().out
+
+
+def test_introspection_endpoint_follows_the_internal_keycloak_url():
+    from mcp_mail.config import load
+    from mcp_mail.diagnose import introspection_endpoint
+
+    from .conftest import BASE_ENV
+
+    internal = "http://keycloak:8080/realms/mail/protocol/openid-connect/"
+    for key, url in [("OIDC_JWKS_URI", internal + "certs"), ("OIDC_TOKEN_ENDPOINT", internal + "token")]:
+        assert introspection_endpoint(load({**BASE_ENV, key: url})) == internal + "token/introspect"
