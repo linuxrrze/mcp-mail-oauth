@@ -149,7 +149,8 @@ if [[ -n "$EXCHANGE" ]]; then
       -s directAccessGrantsEnabled=false -s serviceAccountsEnabled=false)
     echo "created client $PROXY_CLIENT" >&2
   fi
-  if ! kc get "clients/$proxy" --fields attributes | grep -Eq '"standard\.token\.exchange\.enabled"[[:space:]]*:[[:space:]]*"true"'; then
+  # Whitespace-insensitive: kcadm pretty-prints the client's JSON.
+  if ! kc get "clients/$proxy" | tr -d ' \n\t' | grep -q '"standard.token.exchange.enabled":"true"'; then
     kc update "clients/$proxy" -s 'attributes."standard.token.exchange.enabled"=true'
     echo "enabled standard token exchange on $PROXY_CLIENT" >&2
   fi
