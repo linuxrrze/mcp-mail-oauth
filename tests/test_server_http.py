@@ -5,7 +5,7 @@ and the tools. Only the IMAP/SMTP layer (mcp_mail.mail) is replaced."""
 import asyncio
 import json
 
-import httpx
+import httpx2
 import pytest
 
 from mcp_mail import auth as auth_module
@@ -36,8 +36,8 @@ async def client(app):
 
     task = asyncio.create_task(run_lifespan())
     await ready.wait()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="https://mcp-mail.example.com") as c:
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="https://mcp-mail.example.com") as c:
         yield c
     stop.set()
     await task
@@ -100,6 +100,26 @@ async def test_token_signed_by_another_key_is_rejected(client):
 
 async def test_healthz_needs_no_token(client):
     assert (await client.get("/healthz")).text == "ok"
+
+
+# ── Protocol versions ─────────────────────────────────────────────────────────
+
+# Open WebUI and most MCP clients still run the initialize handshake of the
+# 2025 protocol versions; MCP SDK v2 (FastMCP 4) must keep serving them.
+@pytest.mark.parametrize("version", ["2025-03-26", "2025-06-18", "2025-11-25"])
+async def test_handshake_era_clients(client, make_token, version):
+    token = make_token()
+    init = await rpc(client, token, "initialize", {
+        "protocolVersion": version, "capabilities": {},
+        "clientInfo": {"name": "open-webui", "version": "0"},
+    })
+    assert init.status_code == 200, init.text
+    assert init.json()["result"]["protocolVersion"] == version
+    headers = {**HEADERS, "Authorization": f"Bearer {token}", "MCP-Protocol-Version": version}
+    body = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "whoami", "arguments": {}}}
+    resp = await client.post("/mcp", headers=headers, content=json.dumps(body))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["structuredContent"]["mailbox"] == "alice@example.com"
 
 
 # ── Scope-based tool visibility ───────────────────────────────────────────────

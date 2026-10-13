@@ -5,7 +5,7 @@ BASE_URL with a path, since the documented proxy rules depend on them."""
 import asyncio
 from unittest import mock
 
-import httpx
+import httpx2
 import pytest
 
 from mcp_mail import auth as auth_module
@@ -31,7 +31,7 @@ async def _serve(app, requests):
     await ready.wait()
     try:
         # Requests arrive as the proxy forwards them: prefix stripped, internal host.
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp-mail:8000") as c:
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp-mail:8000") as c:
             return await requests(c)
     finally:
         stop.set()
@@ -84,8 +84,8 @@ async def test_proxy_mode_under_prefix(keypair, tmp_path, monkeypatch):
     settings = load({**BASE_ENV, "BASE_URL": PUBLIC, "AUTH_MODE": "proxy", "OIDC_CLIENT_ID": "mcp-mail",
                      "OIDC_CLIENT_SECRET": "secret", "JWT_SIGNING_KEY": "k" * 32})
     verifier = auth_module.build_token_verifier(settings, public_key=keypair.public_key)
-    discovery = httpx.Response(200, json=DISCOVERY, request=httpx.Request("GET", ISSUER))
-    with mock.patch("httpx.get", return_value=discovery):
+    discovery = httpx2.Response(200, json=DISCOVERY, request=httpx2.Request("GET", ISSUER))
+    with mock.patch("httpx2.get", return_value=discovery):
         provider = auth_module.build_auth(settings, verifier)
     app = _app(settings, verifier, provider)
 
@@ -109,7 +109,7 @@ async def test_proxy_mode_routes_exist_without_prefix(keypair, tmp_path, monkeyp
     settings = load({**BASE_ENV, "BASE_URL": PUBLIC, "AUTH_MODE": "proxy", "OIDC_CLIENT_ID": "mcp-mail",
                      "OIDC_CLIENT_SECRET": "secret", "JWT_SIGNING_KEY": "k" * 32})
     verifier = auth_module.build_token_verifier(settings, public_key=keypair.public_key)
-    discovery = httpx.Response(200, json=DISCOVERY, request=httpx.Request("GET", ISSUER))
-    with mock.patch("httpx.get", return_value=discovery):
+    discovery = httpx2.Response(200, json=DISCOVERY, request=httpx2.Request("GET", ISSUER))
+    with mock.patch("httpx2.get", return_value=discovery):
         app = _app(settings, verifier)
     assert path in {getattr(route, "path", None) for route in app.routes}

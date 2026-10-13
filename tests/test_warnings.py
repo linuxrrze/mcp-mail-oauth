@@ -1,4 +1,5 @@
-"""Startup stays quiet: the Authlib httpx deprecation is silenced (D21)."""
+"""Startup stays quiet: with httpx2 installed, Authlib no longer warns about
+its httpx fallback (decisions.md D21)."""
 
 import subprocess
 import sys

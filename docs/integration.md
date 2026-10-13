@@ -49,7 +49,8 @@ Two pitfalls decide most first-time failures:
    doesn't resolve to a reachable address from inside the container (mail
    server on the same host behind NAT), map it with `extra_hosts` (see the
    compose file). If the certificate is from a private CA, mount the CA and
-   set `MAIL_CA_FILE`.
+   set `MAIL_CA_FILE`. If Keycloak's certificate is from a private CA too, set
+   `SSL_CERT_FILE` as well ([mail-server.md](mail-server.md#tls)).
 
 **Behind a reverse proxy under a sub-directory** (e.g. Traefik serving
 `https://ai.example.com/mcp/mail-oauth/`): see [reverse-proxy.md](reverse-proxy.md).
@@ -110,7 +111,7 @@ Edit `.env`:
 Set the image and Open WebUI's network, then start:
 
 ```bash
-export MCP_MAIL_IMAGE=ghcr.io/linuxrrze/mcp-mail-oauth:0.1   # the default; override for another registry
+export MCP_MAIL_IMAGE=ghcr.io/linuxrrze/mcp-mail-oauth:0.2   # the default; override for another registry
 export OPENWEBUI_NETWORK=$(docker inspect open-webui -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')
 docker compose -f docker-compose.existing-stack.yml up -d
 docker compose -f docker-compose.existing-stack.yml logs mcp-mail | head

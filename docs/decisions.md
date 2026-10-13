@@ -60,7 +60,7 @@ same realm:
 - In proxy mode, FastMCP's OIDCProxy hands tools the **upstream** Keycloak
   access token, not its own reference token, and refreshes it transparently
   (verified in `fastmcp/server/auth/oauth_proxy/proxy.py`,
-  `load_access_token`, FastMCP 3.4.x).
+  `load_access_token`, FastMCP 3.4.x and again in 4.1).
 
 Dovecot validates a Keycloak token by introspection, regardless of which
 client it was issued to. So the token the MCP server receives can itself be
@@ -354,7 +354,7 @@ is the default.
 
 ## D14. Packaging and startup checks
 
-- **Compatible-range pins** (`fastmcp>=3.4,<4`, ...). The predecessor pinned
+- **Compatible-range pins** (`fastmcp>=4.1,<5`, ...; D21). The predecessor pinned
   nothing, while this server relies on FastMCP auth internals that change
   between majors (D3).
 - **Configuration is validated at startup** (`config.load`), so a typo stops
@@ -520,23 +520,41 @@ image scan and a container smoke test have all passed, and only from `main`.
 
 ---
 
-## D21. One third-party startup warning is silenced
+## D21. FastMCP 4 and httpx2
 
-**Decision.** `mcp_mail/__init__.py` ignores Authlib's "The httpx module is
-deprecated; please use httpx2 instead" warning, and only that message.
+**Decision.** The server runs on FastMCP 4.1 (MCP SDK v2), and its own HTTP
+calls (OIDC discovery, `mcp-mail-diagnose`) use `httpx2` instead of `httpx`.
 
-**Why.** Authlib 1.8 emits it at import time when the `httpx2` package isn't
-installed. FastMCP's OAuth proxy imports Authlib's httpx client, so it
-appeared on every start, in both auth modes, without anything an operator
-could do about it. Installing `httpx2` instead would switch Authlib to a
-different HTTP library underneath FastMCP, which FastMCP doesn't test
-against. That fix belongs upstream.
+**Why.**
+- FastMCP 4 replaced `httpx` with `httpx2`, Pydantic's API-compatible
+  successor, and no longer installs `httpx`. Keeping `httpx` for this
+  package's two call sites would ship two HTTP stacks with different
+  certificate handling (below).
+- Authlib 1.8, which FastMCP's OAuth proxy uses, printed a deprecation warning
+  on every start when `httpx2` was missing. With `httpx2` installed, the
+  warning is gone at its source. v0.1.2 had silenced it with a warning filter,
+  which this change removes. `tests/test_warnings.py` fails if it comes back.
+- Clients still on the 2025 protocol versions, Open WebUI among them, keep
+  working: SDK v2 serves the `initialize` handshake of 2024-11-05 through
+  2025-11-25 next to the new 2026-07-28 era. `tests/test_server_http.py`
+  checks 2025-03-26, 2025-06-18 and 2025-11-25. A FastMCP 3.4 / MCP SDK 1.30
+  client was also run against a live FastMCP 4.1 server.
+- Nothing this server uses changed: the auth providers, `require_scopes`,
+  `CurrentAccessToken`, `ToolError`, `http_app`/`run` parameters, and the
+  URLs it generates under a sub-directory (pinned by
+  `tests/test_reverse_proxy.py`). `issuer_url` is left unset, so the 4.0
+  change to proxy-issued token issuers doesn't apply either.
 
-**Consequences.** Authlib forces its own warnings to "always" when it is
-imported, so the filter is added after that import. Other Authlib
-deprecations still show. `tests/test_warnings.py` fails if the warning comes
-back, for example after Authlib rewords it. Revisit once FastMCP moves to
-`httpx2`.
+**Consequences.**
+- **Certificate trust for Keycloak changed.** `httpx2` verifies TLS against
+  the operating system's trust store (via `truststore`), not the certifi
+  bundle. In the container this is Debian's `ca-certificates`, so public CAs
+  work as before. A Keycloak with a certificate from a private CA needs
+  `SSL_CERT_FILE` pointing at a PEM bundle that includes that CA (it replaces
+  the default store), or `SSL_CERT_DIR`. `MAIL_CA_FILE` remains IMAP/SMTP only.
+- The `httpx`/`httpcore` loggers are now named `httpx2`/`httpcore2`.
+- The minor version goes up (0.2.0), so deployments pinned to the `0.1` image
+  tag only get this when they change the tag.
 
 [owui-19820]: https://github.com/open-webui/open-webui/discussions/19820
 [owui-28319]: https://github.com/open-webui/open-webui/issues/28319

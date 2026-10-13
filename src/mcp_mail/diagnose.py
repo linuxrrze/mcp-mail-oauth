@@ -25,7 +25,7 @@ import os
 import sys
 import time
 
-import httpx
+import httpx2
 from dotenv import load_dotenv
 
 from . import mail
@@ -83,8 +83,8 @@ def check_claims(claims: dict, *, issuer: str, audience: str, username_claim: st
 
 
 def introspect(issuer: str, token: str, client_id: str, client_secret: str) -> dict:
-    discovery = httpx.get(f"{issuer}/.well-known/openid-configuration", timeout=10).json()
-    resp = httpx.post(
+    discovery = httpx2.get(f"{issuer}/.well-known/openid-configuration", timeout=10).json()
+    resp = httpx2.post(
         discovery["introspection_endpoint"], data={"token": token},
         auth=(client_id, client_secret), timeout=10,
     )
@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             secret = getpass.getpass("Client secret: ")
         try:
             result = introspect(settings.oidc_issuer, token, args.introspect_client_id, secret)
-        except httpx.HTTPError as exc:
+        except httpx2.HTTPError as exc:
             print(f"{FAIL} introspection request failed: {exc}")
             failures.append("introspection")
         else:

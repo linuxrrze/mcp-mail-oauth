@@ -40,7 +40,7 @@ a resource at `/mcp/mail-oauth/mcp` has its metadata at
   `/.well-known/oauth-authorization-server`, while clients look for it with
   the issuer path appended. Hence the rewrite.
 
-These paths are what FastMCP 3.4 generates, and `tests/test_reverse_proxy.py`
+These paths are what FastMCP 4.1 generates (unchanged since 3.4), and `tests/test_reverse_proxy.py`
 pins them down so an upgrade that changes them fails CI.
 
 ## Things to get right

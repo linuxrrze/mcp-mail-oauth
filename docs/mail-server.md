@@ -53,3 +53,7 @@ line, because a 2-4 KB token would exceed command-line limits (D11).
 This server requires TLS for both IMAP and SMTP, and verifies certificates
 (D9). If your certificates come from a private CA, mount the CA bundle and
 set `MAIL_CA_FILE`.
+
+`MAIL_CA_FILE` covers IMAP and SMTP only. If **Keycloak**'s certificate also
+comes from a private CA, set `SSL_CERT_FILE` to a PEM bundle that includes it
+(it replaces the system store for the Keycloak calls; D21).

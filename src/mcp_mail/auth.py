@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 
-import httpx
+import httpx2
 from fastmcp.server.auth import AccessToken, AuthProvider, RemoteAuthProvider
 from fastmcp.server.auth.oidc_proxy import OIDCProxy
 from fastmcp.server.auth.providers.jwt import JWTVerifier
@@ -48,10 +48,10 @@ def discover_jwks_uri(issuer: str, timeout: float = 10.0) -> str:
     """
     url = f"{issuer}/.well-known/openid-configuration"
     try:
-        resp = httpx.get(url, timeout=timeout)
+        resp = httpx2.get(url, timeout=timeout)
         resp.raise_for_status()
         document = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx2.HTTPError, ValueError) as exc:
         raise ConfigError(
             f"Could not load OIDC discovery from {url}: {exc}. If Keycloak is only "
             "reachable from this container under an internal URL, keep OIDC_ISSUER "
