@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import time
 from typing import Annotated, Any
@@ -12,6 +13,9 @@ from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentAccessToken
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken, AuthProvider, require_scopes
+from fastmcp.tools import ToolResult
+from fastmcp.utilities.types import Image
+from mcp.types import TextContent
 from pydantic import Field
 from starlette.middleware import Middleware
 from starlette.requests import Request
@@ -19,7 +23,7 @@ from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__, mail
-from .auth import READ_SCOPE, SEND_SCOPE, TOOL_SCOPES, build_auth, build_exchanger
+from .auth import DRAFT_SCOPE, ORGANIZE_SCOPE, READ_SCOPE, SEND_SCOPE, TOOL_SCOPES, build_auth, build_exchanger
 from .config import Settings
 from .exchange import TokenExchanger, TokenExchangeError
 
@@ -28,6 +32,12 @@ logger = logging.getLogger(__name__)
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": True}
 
 MCP_PATH = "/mcp"
+
+# Shared parameter descriptions (module level: annotations are evaluated here).
+REPLY_TO_UID = ("UID of the message being answered (sets threading headers; without `to`, "
+                "replies to its sender)")
+REPLY_ALL = "With reply_to_uid: also copy the original's To and Cc recipients (your own address excluded)"
+UidList = Annotated[list[str], Field(min_length=1, max_length=mail.MAX_BATCH, description="Message UIDs")]
 
 
 class EndpointPaths:
@@ -67,7 +77,8 @@ def client_settings(settings: Settings) -> list[str]:
         f" http://<this container>:{settings.port}{MCP_PATH} instead)",
         "  Auth: OAuth  (forwards the user's own Keycloak token; not 'OAuth 2.1', 'Bearer' or 'Session')",
         f"  Tokens must come from {settings.oidc_issuer}, with {settings.mcp_audience!r} in aud"
-        f" and the scopes {', '.join(TOOL_SCOPES)} (Keycloak: Default client scopes)",
+        f" and the scope {TOOL_SCOPES[0]}; {', '.join(TOOL_SCOPES[1:])} each enable more tools"
+        " (Keycloak: Default client scopes)",
     ]
     if settings.mail.username_claim == "email" and settings.mail.require_email_verified:
         lines.append("  Mailbox: the token's email claim, only if email_verified is true (MAIL_REQUIRE_EMAIL_VERIFIED)")
@@ -140,7 +151,9 @@ def create_server(settings: Settings, auth: AuthProvider | None = None,
         instructions=(
             "Access the signed-in user's own mailbox over IMAP/SMTP. Message UIDs are "
             "per folder: pass the same folder to read_message that list/search returned. "
-            "send_message really sends mail - confirm recipients and content with the user first."
+            "send_message and forward_message really send mail - confirm recipients and content with the "
+            "user first; save_draft only stores a draft. Nothing is ever deleted permanently: "
+            "trash_messages moves to Trash."
         ),
         auth=auth if auth is not None else build_auth(settings),
     )
@@ -244,23 +257,136 @@ def create_server(settings: Settings, auth: AuthProvider | None = None,
         only that is needed. Never marks the message as read."""
         return await _run(mail.message_info, cfg, *(await credentials(token)), folder, uid)
 
+    @mcp.tool(auth=require_scopes(READ_SCOPE), annotations=READ_ONLY)
+    async def get_thread(
+        uid: str,
+        folder: str = "INBOX",
+        limit: Annotated[int, Field(ge=1, le=mail.MAX_LIST_LIMIT)] = 20,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """The conversation a message belongs to (its earlier messages and the
+        replies), oldest first, from the given folder and the Sent folder. Each
+        entry names its folder; read one with read_message(uid, folder)."""
+        return await _run(mail.get_thread, cfg, *(await credentials(token)), folder, uid, limit)
+
+    @mcp.tool(auth=require_scopes(READ_SCOPE), annotations=READ_ONLY, output_schema=None)
+    async def get_attachment(
+        uid: str,
+        index: Annotated[int, Field(ge=1, description="The attachment's index from read_message/get_message_info")],
+        folder: str = "INBOX",
+        max_chars: Annotated[int, Field(ge=1, le=mail.MAX_BODY_CHARS)] = mail.DEFAULT_BODY_CHARS,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> ToolResult:
+        """Read one attachment: text and HTML files, PDFs (their text), attached
+        emails and images (PNG, JPEG, GIF, WebP, returned as an image). Other
+        types are refused."""
+        result = await _run(mail.get_attachment, cfg, *(await credentials(token)), folder, uid, index, max_chars)
+        image = result.pop("image", None)
+        content = [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+        if image is not None:
+            content.append(Image(data=image, format=result["content_type"].split("/")[1]).to_image_content())
+        return ToolResult(content=content, structured_content=result)
+
+    @mcp.tool(auth=require_scopes(READ_SCOPE), annotations=READ_ONLY)
+    async def folder_status(
+        folder: Annotated[str | None, Field(description="One folder; omit for all folders")] = None,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """Number of messages and unread messages per folder, without listing them."""
+        return await _run(mail.folder_status, cfg, *(await credentials(token)), folder)
+
     @mcp.tool(auth=require_scopes(SEND_SCOPE), annotations={"destructiveHint": False, "openWorldHint": True})
     async def send_message(
-        to: Annotated[list[str], Field(min_length=1, description='Addresses, e.g. ["Ann <ann@example.com>"]')],
         body: str,
+        to: Annotated[list[str] | None, Field(description='Addresses, e.g. ["Ann <ann@example.com>"]; '
+                                                          "optional when replying")] = None,
         subject: Annotated[str | None, Field(description="Optional when replying (defaults to Re: <original>)")] = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
-        reply_to_uid: Annotated[str | None, Field(description="UID of the message being answered (sets threading headers)")] = None,
+        reply_to_uid: Annotated[str | None, Field(description=REPLY_TO_UID)] = None,
         reply_folder: str = "INBOX",
+        reply_all: Annotated[bool, Field(description=REPLY_ALL)] = False,
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         """Send a plain-text email from the signed-in user's own address and save a
-        copy to the Sent folder. This really sends mail: confirm with the user first."""
+        copy to the Sent folder. This really sends mail: confirm recipients and
+        content with the user first (with reply_all, read the original to know them).
+        The result lists who it went to."""
         return await _run(
             mail.send_message, cfg, *(await credentials(token)),
             to=to, subject=subject, body=body, cc=cc, bcc=bcc,
-            reply_to_uid=reply_to_uid, reply_folder=reply_folder,
+            reply_to_uid=reply_to_uid, reply_folder=reply_folder, reply_all=reply_all,
         )
+
+    @mcp.tool(auth=require_scopes(SEND_SCOPE), annotations={"destructiveHint": False, "openWorldHint": True})
+    async def forward_message(
+        uid: str,
+        to: Annotated[list[str], Field(min_length=1, description='Addresses, e.g. ["Ann <ann@example.com>"]')],
+        folder: str = "INBOX",
+        comment: Annotated[str, Field(description="Your text above the forwarded message")] = "",
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """Forward a message, unchanged and with its attachments, as an attachment of
+        a new mail from the user's own address; a copy goes to Sent. This really
+        sends mail: confirm recipients with the user first."""
+        return await _run(
+            mail.forward_message, cfg, *(await credentials(token)),
+            folder=folder, uid=uid, to=to, comment=comment, cc=cc, bcc=bcc,
+        )
+
+    @mcp.tool(auth=require_scopes(DRAFT_SCOPE), annotations={"destructiveHint": False, "openWorldHint": False})
+    async def save_draft(
+        body: str,
+        to: Annotated[list[str] | None, Field(description='Addresses, e.g. ["Ann <ann@example.com>"]')] = None,
+        subject: str | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        reply_to_uid: Annotated[str | None, Field(description=REPLY_TO_UID)] = None,
+        reply_folder: str = "INBOX",
+        reply_all: Annotated[bool, Field(description=REPLY_ALL)] = False,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """Save a plain-text email as a draft in the Drafts folder, without sending
+        it. The user reviews and sends it from their mail client."""
+        return await _run(
+            mail.save_draft, cfg, *(await credentials(token)),
+            to=to, subject=subject, body=body, cc=cc, bcc=bcc,
+            reply_to_uid=reply_to_uid, reply_folder=reply_folder, reply_all=reply_all,
+        )
+
+    @mcp.tool(auth=require_scopes(ORGANIZE_SCOPE),
+              annotations={"destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+    async def set_flags(
+        uids: UidList,
+        folder: str = "INBOX",
+        seen: Annotated[bool | None, Field(description="true = mark read, false = mark unread")] = None,
+        flagged: Annotated[bool | None, Field(description="true = flag/star, false = unflag")] = None,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """Mark messages read or unread, and/or flagged or unflagged."""
+        return await _run(mail.set_flags, cfg, *(await credentials(token)), folder, uids, seen, flagged)
+
+    @mcp.tool(auth=require_scopes(ORGANIZE_SCOPE), annotations={"destructiveHint": False, "openWorldHint": False})
+    async def move_messages(
+        uids: UidList,
+        target_folder: Annotated[str, Field(description="Existing folder, e.g. Archive (see list_folders)")],
+        folder: str = "INBOX",
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """Move messages to another existing folder, e.g. to archive them. Their
+        UIDs change in the new folder."""
+        return await _run(mail.move_messages, cfg, *(await credentials(token)), folder, uids, target_folder)
+
+    @mcp.tool(auth=require_scopes(ORGANIZE_SCOPE), annotations={"destructiveHint": True, "openWorldHint": False})
+    async def trash_messages(
+        uids: UidList,
+        folder: str = "INBOX",
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """Move messages to the Trash folder (the user can restore them from there).
+        Nothing is deleted permanently. Confirm with the user first."""
+        return await _run(mail.trash_messages, cfg, *(await credentials(token)), folder, uids)
 
     return mcp

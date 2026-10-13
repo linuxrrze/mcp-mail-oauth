@@ -10,7 +10,7 @@ def test_endpoint_is_base_url_plus_mcp_behind_a_prefix():
     text = "\n".join(client_settings(load({**BASE_ENV, "BASE_URL": "https://ai.example.com/mcp/mail-oauth/"})))
     assert "URL:  https://ai.example.com/mcp/mail-oauth/mcp\n" in text
     assert "Auth: OAuth " in text
-    assert "mcp:mail/read, mcp:mail/send" in text
+    assert "mcp:mail/read; mcp:mail/send, mcp:mail/draft, mcp:mail/organize each enable" in text
     assert "AUTH_MODE=proxy" not in text
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import binascii
 import imaplib
+import io
 import re
 import smtplib
 import socket
@@ -21,10 +22,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from email import message_from_bytes, policy
-from email.errors import MessageError
+from email.errors import HeaderParseError, MessageError
+from email.header import decode_header, make_header
 from email.headerregistry import Address
 from email.message import EmailMessage
-from email.utils import formatdate, getaddresses, make_msgid
+from email.utils import formatdate, getaddresses, make_msgid, parsedate_to_datetime
 from html.parser import HTMLParser
 
 from .config import MailSettings
@@ -278,13 +280,49 @@ def _parse_list_line(item: bytes | tuple[bytes, bytes]) -> dict | None:
     return {"name": decode_mailbox(name), "flags": flags}
 
 
+def _list_folders(conn: imaplib.IMAP4) -> list[dict]:
+    typ, data = conn.list()
+    if typ != "OK":
+        raise MailRequestError("LIST failed.")
+    folders = [f for f in (_parse_list_line(item) for item in data if item) if f]
+    return [f for f in folders if "\\Noselect" not in f["flags"] and "\\NonExistent" not in f["flags"]]
+
+
 def list_folders(settings: MailSettings, username: str, token: str) -> list[dict]:
     with imap_session(settings, username, token) as conn:
-        typ, data = conn.list()
-        if typ != "OK":
-            raise MailRequestError("LIST failed.")
-        folders = [f for f in (_parse_list_line(item) for item in data if item) if f]
-        return [f for f in folders if "\\Noselect" not in f["flags"] and "\\NonExistent" not in f["flags"]]
+        return _list_folders(conn)
+
+
+def _special_folder(conn: imaplib.IMAP4, use: str, configured: str, fallback: str) -> str:
+    """The configured folder, else the one with that special-use flag
+    (RFC 6154: \\Drafts, \\Trash), else the conventional name."""
+    if configured:
+        return configured
+    for folder in _list_folders(conn):
+        if use in folder["flags"]:
+            return folder["name"]
+    return fallback
+
+
+MAX_STATUS_FOLDERS = 100
+
+
+def folder_status(settings: MailSettings, username: str, token: str, folder: str | None = None) -> dict:
+    """Message and unread counts (IMAP STATUS), for one folder or all."""
+    with imap_session(settings, username, token) as conn:
+        names = [folder] if folder else [f["name"] for f in _list_folders(conn)][:MAX_STATUS_FOLDERS]
+        folders = []
+        for name in names:
+            typ, data = conn.status(_quote(encode_mailbox(name)), "(MESSAGES UNSEEN)")
+            if typ != "OK":
+                if folder:
+                    raise MailRequestError(f"Folder {folder!r} not found (use list_folders).")
+                continue
+            line = data[0] or b""
+            messages, unseen = re.search(rb"MESSAGES (\d+)", line), re.search(rb"UNSEEN (\d+)", line)
+            folders.append({"folder": name, "messages": int(messages.group(1)) if messages else None,
+                            "unread": int(unseen.group(1)) if unseen else None})
+    return {"folders": folders}
 
 
 def _select(conn: imaplib.IMAP4, folder: str, *, readonly: bool = True) -> None:
@@ -333,6 +371,7 @@ def _fetch_summaries(conn: imaplib.IMAP4, uids: list[str]) -> list[dict]:
             "to": str(headers.get("To", "")),
             "subject": str(headers.get("Subject", "")),
             "date": str(headers.get("Date", "")),
+            "message_id": str(headers.get("Message-ID", "")),
             "unread": "\\Seen" not in flags,
             "flagged": "\\Flagged" in flags,
             "size": meta["size"],
@@ -426,6 +465,64 @@ def search_messages(settings: MailSettings, username: str, token: str, folder: s
             "total": len(uids),
             "messages": _fetch_summaries(conn, uids[:_clamp(limit)]),
         }
+
+
+MAX_THREAD_IDS = 30
+
+
+def _or(terms: list[list[str]]) -> list[str]:
+    """IMAP's prefix OR for any number of search terms: OR OR a b c."""
+    return ["OR"] * (len(terms) - 1) + [token for term in terms for token in term]
+
+
+def get_thread(settings: MailSettings, username: str, token: str, folder: str, uid: str, limit: int) -> dict:
+    """The conversation a message belongs to, oldest first.
+
+    Uses Message-ID/References/In-Reply-To (no THREAD extension needed):
+    its ancestors by Message-ID, and every message referring to the thread's
+    root or to this message. Searches the given folder and the Sent folder,
+    so your own replies are included.
+    """
+    uid = _check_uid(uid)
+    with imap_session(settings, username, token) as conn:
+        _select(conn, folder)
+        headers = message_from_bytes(
+            _fetch_raw(conn, uid, "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES IN-REPLY-TO)]"),
+            policy=policy.compat32)
+        own = _MSGID_RE.findall(headers.get("Message-ID") or "")[:1]
+        refs = _MSGID_RE.findall(headers.get("References") or "") + _MSGID_RE.findall(headers.get("In-Reply-To") or "")
+        ids = [i for i in dict.fromkeys(refs + own) if i.isascii()]
+        if not ids:
+            raise MailRequestError("The message has no Message-ID or references, so no thread can be found.")
+        roots = list(dict.fromkeys([ids[0], *own]))
+        ids = list(dict.fromkeys([ids[0], *ids[-MAX_THREAD_IDS:]]))
+        terms = [["HEADER", "MESSAGE-ID", _quote(i)] for i in ids]
+        terms += [["HEADER", field, _quote(r)] for r in roots for field in ("REFERENCES", "IN-REPLY-TO")]
+
+        found: list[dict] = []
+        folders = [folder] + ([settings.sent_folder] if settings.sent_folder and settings.sent_folder != folder else [])
+        for name in folders:
+            if name != folder:
+                try:
+                    _select(conn, name)
+                except MailRequestError:
+                    continue
+            uids = _uid_search(conn, *_or(terms))
+            found += [{**m, "folder": name} for m in _fetch_summaries(conn, uids[-MAX_LIST_LIMIT:])]
+
+    def when(message: dict) -> tuple[float, int]:
+        # Date headers have one-second resolution; on a tie, ancestors (in
+        # References order) go before the messages answering them.
+        ids_ = _MSGID_RE.findall(message.get("message_id", ""))
+        order = ids.index(ids_[0]) if ids_ and ids_[0] in ids else len(ids)
+        try:
+            return parsedate_to_datetime(message["date"]).timestamp(), order
+        except (TypeError, ValueError, IndexError):
+            return 0.0, order
+
+    found.sort(key=when)
+    limit = _clamp(limit)
+    return {"total": len(found), "truncated": len(found) > limit, "messages": found[-limit:]}
 
 
 class _HTMLText(HTMLParser):
@@ -602,22 +699,25 @@ def split_parts(parts: list[dict]) -> tuple[dict | None, list[dict]]:
     candidates = [p for p in parts if is_text_body(p)]
     body = next((p for p in candidates if p["content_type"] == "text/plain"), None) or \
         next(iter(candidates), None)
-    attachments = [
-        {
-            "filename": part["filename"] or "(unnamed)",
-            "content_type": part["content_type"],
-            # BODYSTRUCTURE gives the encoded size. Base64 is 4 bytes per 3, in
-            # lines of 76 + CRLF: 57 decoded bytes per 78. An estimate, then.
-            "size": part["size"] * 57 // 78 if part["encoding"] == "base64" else part["size"],
-        }
-        for part in parts if not is_text_body(part)
+    return body, [part for part in parts if not is_text_body(part)]
+
+
+def _decoded_size(part: dict) -> int:
+    # BODYSTRUCTURE gives the encoded size. Base64 is 4 bytes per 3, in lines
+    # of 76 + CRLF: 57 decoded bytes per 78. An estimate, then.
+    return part["size"] * 57 // 78 if part["encoding"] == "base64" else part["size"]
+
+
+def describe_attachments(parts: list[dict]) -> list[dict]:
+    """The attachment list tools show; `index` is what get_attachment takes."""
+    return [
+        {"index": i, "filename": part["filename"] or "(unnamed)", "content_type": part["content_type"],
+         "size": _decoded_size(part)}
+        for i, part in enumerate(parts, 1)
     ]
-    return body, attachments
 
 
-def decode_part(data: bytes, part: dict, complete: bool) -> str:
-    """Transfer- and charset-decode a (possibly truncated) part."""
-    encoding = part["encoding"]
+def _transfer_decode(data: bytes, encoding: str, complete: bool) -> bytes:
     if encoding == "base64":
         compact = re.sub(rb"[^A-Za-z0-9+/=]", b"", data)
         compact = compact[:len(compact) - len(compact) % 4]
@@ -629,6 +729,12 @@ def decode_part(data: bytes, part: dict, complete: bool) -> str:
         if not complete:  # don't decode a cut-off "=4" or soft line break
             data = re.sub(rb"=[0-9A-Fa-f]?$", b"", data)
         data = binascii.a2b_qp(data)
+    return data
+
+
+def decode_part(data: bytes, part: dict, complete: bool) -> str:
+    """Transfer- and charset-decode a (possibly truncated) part."""
+    data = _transfer_decode(data, part["encoding"], complete)
     charset = part["params"].get("charset") or "us-ascii"
     try:
         text = data.decode(charset, errors="replace")
@@ -653,7 +759,7 @@ def _headers_dict(headers) -> dict:
 
 
 def _fetch_overview(conn: imaplib.IMAP4, uid: str) -> tuple[dict, dict | None, list[dict]]:
-    """(headers + flags + size, text part, attachments), without any body."""
+    """(headers + flags + size, text part, attachment parts), without any body."""
     typ, data = conn.uid("FETCH", uid, "(UID FLAGS RFC822.SIZE BODYSTRUCTURE)")
     if typ != "OK":
         raise MailRequestError(f"FETCH failed for UID {uid}.")
@@ -694,7 +800,7 @@ def message_info(settings: MailSettings, username: str, token: str, folder: str,
         _select(conn, folder)
         overview, body, attachments = _fetch_overview(conn, uid)
     return {"uid": uid, "folder": folder, **overview,
-            "body_type": body["content_type"] if body else None, "attachments": attachments}
+            "body_type": body["content_type"] if body else None, "attachments": describe_attachments(attachments)}
 
 
 def read_message(
@@ -720,11 +826,92 @@ def read_message(
             conn.uid("STORE", uid, "+FLAGS", "(\\Seen)")
     return {
         "uid": uid, "folder": folder, **overview,
-        "body": text[:max_chars], "body_truncated": truncated, "attachments": attachments,
+        "body": text[:max_chars], "body_truncated": truncated, "attachments": describe_attachments(attachments),
     }
 
 
-# ── Sending ──────────────────────────────────────────────────────────────────
+# ── Attachments ──────────────────────────────────────────────────────────────
+
+MAX_PDF_PAGES = 100
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+def _pdf_text(data: bytes, max_chars: int) -> tuple[str, bool]:
+    """Text of a PDF's pages, stopping once max_chars are collected."""
+    from pypdf import PdfReader  # only loaded when a PDF is actually read
+
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise MailRequestError("The PDF is password-protected.")
+        pages, text = len(reader.pages), ""
+        for number, page in enumerate(reader.pages[:MAX_PDF_PAGES], 1):
+            text += (page.extract_text() or "").strip() + "\n\n"
+            if len(text) > max_chars:
+                return text, True
+        return text.strip(), pages > MAX_PDF_PAGES
+    except MailRequestError:
+        raise
+    except Exception as exc:  # pypdf raises many types on malformed input
+        raise MailRequestError(f"The PDF could not be read ({exc.__class__.__name__}).") from None
+
+
+def get_attachment(
+    settings: MailSettings, username: str, token: str, folder: str, uid: str, index: int, max_chars: int,
+) -> dict:
+    """One attachment's content: text, HTML (as text), PDF text, a forwarded
+    message's text, or an image (returned as `image` bytes for the caller to
+    turn into image content). Other types are refused, not dumped as base64."""
+    uid = _check_uid(uid)
+    max_chars = max(1, min(int(max_chars), MAX_BODY_CHARS))
+    with imap_session(settings, username, token) as conn:
+        _select(conn, folder)
+        _, _, parts = _fetch_overview(conn, uid)
+        if not 1 <= index <= len(parts):
+            raise MailRequestError(f"Message {uid} has {len(parts)} attachment(s); index {index} doesn't exist.")
+        part = parts[index - 1]
+        info = describe_attachments(parts)[index - 1]
+        if _decoded_size(part) > settings.max_attachment_bytes:
+            raise MailRequestError(
+                f"The attachment is about {_decoded_size(part):,} bytes; reading is limited to "
+                f"{settings.max_attachment_bytes:,} (MAIL_MAX_ATTACHMENT_BYTES).")
+        ctype = part["content_type"]
+        is_pdf = ctype == "application/pdf" or (
+            ctype == "application/octet-stream" and (part["filename"] or "").lower().endswith(".pdf"))
+        if not (ctype.startswith("text/") or ctype == "message/rfc822" or is_pdf or ctype in IMAGE_TYPES):
+            raise MailRequestError(
+                f"Attachment {index} ({info['filename']}, {ctype}) can't be shown: only text, HTML, PDF, "
+                "images and attached messages are supported.")
+        data = _transfer_decode(_fetch_raw(conn, uid, f"BODY.PEEK[{part['section']}]"), part["encoding"], True)
+
+    result = {"uid": uid, "folder": folder, **info, "size": len(data)}
+    if ctype in IMAGE_TYPES:
+        return {**result, "image": data}
+    if is_pdf:
+        text, truncated = _pdf_text(data, max_chars)
+    elif ctype == "message/rfc822":
+        inner = message_from_bytes(data, policy=policy.default)
+        body = inner.get_body(preferencelist=("plain", "html"))
+        content = ""
+        if body is not None:
+            try:
+                content = body.get_content()
+            except (LookupError, UnicodeDecodeError):
+                content = (body.get_payload(decode=True) or b"").decode("utf-8", errors="replace")
+            if body.get_content_type() == "text/html":
+                content = html_to_text(content)
+        names = {"from": "From", "to": "To", "cc": "Cc", "subject": "Subject", "date": "Date", "message_id": "Message-ID"}
+        head = "\n".join(f"{names[k]}: {v}" for k, v in _headers_dict(inner).items() if v)
+        text, truncated = f"{head}\n\n{content}".replace("\r\n", "\n"), False
+    else:
+        text = decode_part(data, {**part, "encoding": "binary"}, True)
+        if ctype == "text/html":
+            text = html_to_text(text)
+        truncated = False
+    return {**result, "text": text[:max_chars], "truncated": truncated or len(text) > max_chars}
+
+
+# ── Sending and drafts ───────────────────────────────────────────────────────
 
 def parse_recipients(values: list[str] | None, field: str) -> list[Address]:
     """Parse recipient strings ("Name <a@b>", "a@b, c@d") into addresses.
@@ -748,44 +935,87 @@ def parse_recipients(values: list[str] | None, field: str) -> list[Address]:
     return out
 
 
+def _header_addresses(raw: str | None) -> list[Address]:
+    """Addresses from a received header; whatever doesn't parse is skipped.
+
+    Split first, decode display names after: a decoded name may contain a
+    comma ("Müller, Hans") that would otherwise split the address."""
+    out: list[Address] = []
+    for name, addr in getaddresses([re.sub(r"[\x00-\x1f\x7f]+", " ", raw or "")]):
+        if addr and "@" in addr.strip("@"):
+            try:
+                name = re.sub(r"[\x00-\x1f\x7f]+", " ", str(make_header(decode_header(name)))) if name else ""
+                out.append(Address(display_name=name, addr_spec=addr))
+            except (ValueError, IndexError, MessageError):
+                pass
+    return out
+
+
 _MSGID_RE = re.compile(r"<[^<>\s]+>")
+_REPLY_FIELDS = "MESSAGE-ID REFERENCES SUBJECT FROM REPLY-TO TO CC"
 
 
 def _reply_headers(conn: imaplib.IMAP4, uid: str) -> dict:
-    """Threading headers of the message being answered.
+    """What a reply needs from the message being answered.
 
-    They come from someone else's mail, so only well-formed <message-ids>
-    are taken over; encoded line breaks (=?utf-8?q?=0D=0A?=) would otherwise
-    decode into header values Python refuses to set, failing the reply.
+    The headers come from someone else's mail, so only well-formed
+    <message-id>s are taken over and the subject is made one line; encoded
+    line breaks (=?utf-8?q?=0D=0A?=) would otherwise decode into header values
+    Python refuses to set, failing the reply.
     """
-    raw = _fetch_raw(conn, uid, "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES SUBJECT)]")
-    headers = message_from_bytes(raw, policy=policy.default)
-    ids = _MSGID_RE.findall(str(headers.get("Message-ID", "")))
+    raw = _fetch_raw(conn, uid, f"BODY.PEEK[HEADER.FIELDS ({_REPLY_FIELDS})]")
+    headers = message_from_bytes(raw, policy=policy.compat32)
+
+    def text(name: str) -> str:
+        value = headers.get(name)
+        try:
+            return str(make_header(decode_header(value))) if value else ""
+        except (LookupError, UnicodeDecodeError, HeaderParseError):
+            return value or ""
+
+    ids = _MSGID_RE.findall(text("Message-ID"))
     message_id = ids[0] if len(ids) == 1 else ""
-    references = _MSGID_RE.findall(str(headers.get("References", ""))) + ([message_id] if message_id else [])
-    subject = re.sub(r"[\x00-\x1f\x7f]+", " ", str(headers.get("Subject", ""))).strip()
-    return {"message_id": message_id, "references": " ".join(references), "subject": subject}
+    references = _MSGID_RE.findall(text("References")) + ([message_id] if message_id else [])
+    return {
+        "message_id": message_id,
+        "references": " ".join(references),
+        "subject": re.sub(r"[\x00-\x1f\x7f]+", " ", text("Subject")).strip(),
+        "reply_to": _header_addresses(headers.get("Reply-To")) or _header_addresses(headers.get("From")),
+        "to": _header_addresses(headers.get("To")),
+        "cc": _header_addresses(headers.get("Cc")),
+    }
 
 
-def send_message(
-    settings: MailSettings, username: str, token: str, *, to: list[str], subject: str | None, body: str,
-    cc: list[str] | None = None, bcc: list[str] | None = None,
-    reply_to_uid: str | None = None, reply_folder: str = "INBOX",
-) -> dict:
+def _without(addresses: list[Address], exclude: set[str]) -> list[Address]:
+    """Drop addresses in `exclude` (lowercase addr-specs) and duplicates."""
+    out = []
+    for addr in addresses:
+        key = addr.addr_spec.lower()
+        if key not in exclude:
+            exclude.add(key)
+            out.append(addr)
+    return out
+
+
+def _compose(
+    settings: MailSettings, username: str, token: str, *, to: list[str] | None, subject: str | None, body: str,
+    cc: list[str] | None, bcc: list[str] | None, reply_to_uid: str | None, reply_folder: str, reply_all: bool,
+    need_recipients: bool,
+) -> EmailMessage:
+    """The message send_message sends and save_draft stores.
+
+    Replying: without `to`, the reply goes to the original's Reply-To (or
+    From); reply_all also copies its To and Cc, minus your own address.
+    """
     to_addrs = parse_recipients(to, "to")
     cc_addrs = parse_recipients(cc, "cc")
     bcc_addrs = parse_recipients(bcc, "bcc")
-    if not to_addrs:
-        raise MailRequestError("At least one 'to' recipient is required.")
+    if reply_all and not reply_to_uid:
+        raise MailRequestError("reply_all needs reply_to_uid.")
 
     msg = EmailMessage()
     # The sender is always the authenticated user (D10): never a tool argument.
     msg["From"] = username
-    msg["To"] = to_addrs
-    if cc_addrs:
-        msg["Cc"] = cc_addrs
-    if bcc_addrs:
-        msg["Bcc"] = bcc_addrs  # kept for the Sent copy; never transmitted
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=username.rsplit("@", 1)[-1] if "@" in username else None)
 
@@ -799,21 +1029,55 @@ def send_message(
         if not subject:
             orig = original["subject"]
             subject = orig if orig.lower().startswith("re:") else f"Re: {orig}"
-    if not subject:
+        if not to_addrs:
+            to_addrs = original["reply_to"]
+        if reply_all:
+            cc_addrs = cc_addrs + original["to"] + original["cc"]
+    seen = {username.lower()}
+    to_addrs = _without(to_addrs, seen)
+    cc_addrs = _without(cc_addrs, seen)
+    bcc_addrs = _without(bcc_addrs, seen)
+    if need_recipients and not (to_addrs or cc_addrs or bcc_addrs):
+        raise MailRequestError("At least one recipient is required.")
+    if to_addrs:
+        msg["To"] = to_addrs
+    if cc_addrs:
+        msg["Cc"] = cc_addrs
+    if bcc_addrs:
+        msg["Bcc"] = bcc_addrs  # kept for the Sent copy; never transmitted
+    if not subject and need_recipients:
         raise MailRequestError("subject is required (it's optional only when replying).")
     try:
-        msg["Subject"] = subject
+        msg["Subject"] = subject or ""
     except ValueError as exc:  # header injection attempt (CR/LF)
         raise MailRequestError(f"Invalid subject: {exc}") from None
     msg.set_content(body)
+    return msg
 
+
+def _addresses(msg: EmailMessage, field: str) -> list[str]:
+    header = msg.get(field)
+    return [str(a) for a in header.addresses] if header is not None else []
+
+
+def _append(conn: imaplib.IMAP4, folder: str, flags: str, msg: EmailMessage) -> str | None:
+    """APPEND; returns the new UID when the server reports it (UIDPLUS)."""
+    typ, data = conn.append(_quote(encode_mailbox(folder)), flags, imaplib.Time2Internaldate(time.time()),
+                            msg.as_bytes(policy=msg.policy.clone(linesep="\r\n")))
+    if typ != "OK":
+        raise MailRequestError(f"Saving to {folder!r} failed: {data!r}")
+    match = re.search(rb"APPENDUID \d+ (\d+)", data[0] or b"") if data else None
+    return match.group(1).decode() if match else None
+
+
+def _deliver(settings: MailSettings, username: str, token: str, msg: EmailMessage) -> dict:
+    """Send over SMTP to exactly the To/Cc/Bcc addresses, then copy to Sent."""
+    envelope = [a.addr_spec for field in ("To", "Cc", "Bcc") if msg.get(field) is not None
+                for a in msg[field].addresses]
     with smtp_session(settings, username, token) as smtp:
         try:
             # send_message() never transmits Bcc headers, but does deliver to them.
-            refused = smtp.send_message(
-                msg, from_addr=username,
-                to_addrs=[a.addr_spec for a in to_addrs + cc_addrs + bcc_addrs],
-            )
+            refused = smtp.send_message(msg, from_addr=username, to_addrs=envelope)
         except smtplib.SMTPRecipientsRefused as exc:
             raise MailRequestError(f"All recipients were refused: {exc.recipients}") from None
         except smtplib.SMTPSenderRefused as exc:
@@ -822,21 +1086,176 @@ def send_message(
                 "With Postfix reject_sender_login_mismatch, the login name and the From address must match."
             ) from None
 
-    result: dict = {"status": "sent", "message_id": msg["Message-ID"], "refused": {k: str(v) for k, v in refused.items()}}
+    result: dict = {
+        "status": "sent", "message_id": msg["Message-ID"],
+        "to": _addresses(msg, "To"), "cc": _addresses(msg, "Cc"), "bcc": _addresses(msg, "Bcc"),
+        "refused": {k: str(v) for k, v in refused.items()},
+    }
 
     # The message is already out at this point: a failure here must be
     # reported, never raised (a retry would send the mail twice).
     if settings.sent_folder:
         try:
             with imap_session(settings, username, token) as conn:
-                typ, data = conn.append(
-                    _quote(encode_mailbox(settings.sent_folder)), "(\\Seen)",
-                    imaplib.Time2Internaldate(time.time()), msg.as_bytes(),
-                )
-            result["saved_to"] = settings.sent_folder if typ == "OK" else None
-            if typ != "OK":
-                result["warning"] = f"Sent, but saving a copy to {settings.sent_folder!r} failed: {data!r}"
+                _append(conn, settings.sent_folder, "(\\Seen)", msg)
+            result["saved_to"] = settings.sent_folder
         except MailError as exc:
             result["saved_to"] = None
             result["warning"] = f"Sent, but saving a copy to {settings.sent_folder!r} failed: {exc}"
     return result
+
+
+def send_message(
+    settings: MailSettings, username: str, token: str, *, to: list[str] | None, subject: str | None, body: str,
+    cc: list[str] | None = None, bcc: list[str] | None = None,
+    reply_to_uid: str | None = None, reply_folder: str = "INBOX", reply_all: bool = False,
+) -> dict:
+    msg = _compose(settings, username, token, to=to, subject=subject, body=body, cc=cc, bcc=bcc,
+                   reply_to_uid=reply_to_uid, reply_folder=reply_folder, reply_all=reply_all, need_recipients=True)
+    return _deliver(settings, username, token, msg)
+
+
+def save_draft(
+    settings: MailSettings, username: str, token: str, *, to: list[str] | None, subject: str | None, body: str,
+    cc: list[str] | None = None, bcc: list[str] | None = None,
+    reply_to_uid: str | None = None, reply_folder: str = "INBOX", reply_all: bool = False,
+) -> dict:
+    msg = _compose(settings, username, token, to=to, subject=subject, body=body, cc=cc, bcc=bcc,
+                   reply_to_uid=reply_to_uid, reply_folder=reply_folder, reply_all=reply_all, need_recipients=False)
+    with imap_session(settings, username, token) as conn:
+        folder = _special_folder(conn, "\\Drafts", settings.drafts_folder, "Drafts")
+        uid = _append(conn, folder, "(\\Draft \\Seen)", msg)
+    return {
+        "status": "saved", "folder": folder, "uid": uid, "message_id": msg["Message-ID"],
+        "to": _addresses(msg, "To"), "cc": _addresses(msg, "Cc"), "bcc": _addresses(msg, "Bcc"),
+        "subject": str(msg["Subject"]),
+    }
+
+
+# Forwarded messages are attached verbatim: no refolding of their headers,
+# which would break DKIM signatures and could alter content.
+_VERBATIM = policy.default.clone(refold_source="none")
+
+
+def forward_message(
+    settings: MailSettings, username: str, token: str, *, folder: str, uid: str, to: list[str], comment: str = "",
+    cc: list[str] | None = None, bcc: list[str] | None = None,
+) -> dict:
+    """Forward a message as a message/rfc822 attachment, attachments included."""
+    uid = _check_uid(uid)
+    to_addrs = _without(parse_recipients(to, "to"), set())
+    cc_addrs = _without(parse_recipients(cc, "cc"), {a.addr_spec.lower() for a in to_addrs})
+    bcc_addrs = _without(parse_recipients(bcc, "bcc"), {a.addr_spec.lower() for a in to_addrs + cc_addrs})
+    if not to_addrs:
+        raise MailRequestError("At least one 'to' recipient is required.")
+    with imap_session(settings, username, token) as conn:
+        _select(conn, folder)
+        overview, _, _ = _fetch_overview(conn, uid)
+        if overview["size"] and overview["size"] > settings.max_forward_bytes:
+            raise MailRequestError(
+                f"The message is {overview['size']:,} bytes; forwarding is limited to "
+                f"{settings.max_forward_bytes:,} (MAIL_MAX_FORWARD_BYTES).")
+        raw = _fetch_raw(conn, uid, "BODY.PEEK[]")
+    original = message_from_bytes(raw, policy=_VERBATIM)
+    subject = re.sub(r"[\x00-\x1f\x7f]+", " ", overview["subject"]).strip()
+    if not re.match(r"(?i)(fwd?|wg):", subject):
+        subject = f"Fwd: {subject}"
+
+    msg = EmailMessage(policy=_VERBATIM)
+    msg["From"] = username
+    msg["To"] = to_addrs
+    if cc_addrs:
+        msg["Cc"] = cc_addrs
+    if bcc_addrs:
+        msg["Bcc"] = bcc_addrs
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=username.rsplit("@", 1)[-1] if "@" in username else None)
+    msg.set_content(comment or "Forwarded message attached.")
+    stem = re.sub(r"[^\w .-]+", "", overview["subject"])[:60].strip() or "message"
+    msg.add_attachment(original, filename=f"{stem}.eml")
+    result = _deliver(settings, username, token, msg)
+    result["forwarded"] = {"uid": uid, "folder": folder, "subject": overview["subject"]}
+    return result
+
+
+# ── Organizing: flags, move, trash ───────────────────────────────────────────
+
+MAX_BATCH = 50
+
+
+def _uid_set(uids: list[str]) -> str:
+    if not uids:
+        raise MailRequestError("Give at least one UID.")
+    if len(uids) > MAX_BATCH:
+        raise MailRequestError(f"At most {MAX_BATCH} messages per call.")
+    return ",".join(dict.fromkeys(_check_uid(u) for u in uids))
+
+
+def set_flags(
+    settings: MailSettings, username: str, token: str, folder: str, uids: list[str],
+    seen: bool | None = None, flagged: bool | None = None,
+) -> dict:
+    if seen is None and flagged is None:
+        raise MailRequestError("Set seen and/or flagged.")
+    uid_set = _uid_set(uids)
+    with imap_session(settings, username, token) as conn:
+        _select(conn, folder, readonly=False)
+        for flag, value in (("\\Seen", seen), ("\\Flagged", flagged)):
+            if value is None:
+                continue
+            typ, data = conn.uid("STORE", uid_set, "+FLAGS.SILENT" if value else "-FLAGS.SILENT", f"({flag})")
+            if typ != "OK":
+                raise MailRequestError(f"Changing {flag} failed: {data!r}")
+    return {"folder": folder, "uids": uid_set.split(","),
+            **({"seen": seen} if seen is not None else {}), **({"flagged": flagged} if flagged is not None else {})}
+
+
+def _capabilities(conn: imaplib.IMAP4) -> set[str]:
+    # Asked after login: servers advertise MOVE/UIDPLUS only to logged-in users.
+    typ, data = conn.capability()
+    return set((data[0] or b"").decode().upper().split()) if typ == "OK" and data else set()
+
+
+def _move(conn: imaplib.IMAP4, folder: str, uid_set: str, target: str) -> None:
+    if target == folder:
+        raise MailRequestError(f"The messages are already in {target!r}.")
+    quoted = _quote(encode_mailbox(target))
+    typ, _ = conn.status(quoted, "(MESSAGES)")
+    if typ != "OK":
+        raise MailRequestError(f"Folder {target!r} not found (use list_folders).")
+    _select(conn, folder, readonly=False)
+    caps = _capabilities(conn)
+    if "MOVE" in caps:
+        typ, data = conn.uid("MOVE", uid_set, quoted)
+    elif "UIDPLUS" in caps:
+        # COPY, then expunge exactly these UIDs. Without UIDPLUS a plain
+        # EXPUNGE would also remove other messages marked \Deleted.
+        typ, data = conn.uid("COPY", uid_set, quoted)
+        if typ == "OK":
+            conn.uid("STORE", uid_set, "+FLAGS.SILENT", "(\\Deleted)")
+            typ, data = conn.uid("EXPUNGE", uid_set)
+    else:
+        raise MailRequestError("The mail server supports neither MOVE nor UIDPLUS; moving isn't possible safely.")
+    if typ != "OK":
+        raise MailRequestError(f"Moving to {target!r} failed: {data!r}")
+
+
+def move_messages(
+    settings: MailSettings, username: str, token: str, folder: str, uids: list[str], target_folder: str,
+) -> dict:
+    uid_set = _uid_set(uids)
+    with imap_session(settings, username, token) as conn:
+        _move(conn, folder, uid_set, target_folder)
+    return {"moved": uid_set.split(","), "from": folder, "to": target_folder}
+
+
+def trash_messages(settings: MailSettings, username: str, token: str, folder: str, uids: list[str]) -> dict:
+    """Move to the Trash folder. Nothing is ever deleted permanently (D10)."""
+    uid_set = _uid_set(uids)
+    with imap_session(settings, username, token) as conn:
+        trash = _special_folder(conn, "\\Trash", settings.trash_folder, "Trash")
+        if folder == trash:
+            raise MailRequestError(f"The messages are already in {trash!r}. Permanent deletion is not offered.")
+        _move(conn, folder, uid_set, trash)
+    return {"trashed": uid_set.split(","), "from": folder, "to": trash}

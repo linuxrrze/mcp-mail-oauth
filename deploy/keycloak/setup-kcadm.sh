@@ -3,14 +3,16 @@
 # Idempotent: re-running skips what already exists. Nothing is deleted.
 #
 # Creates/ensures:
-#   - client scopes  mail (with 2 audience mappers), mcp:mail/read, mcp:mail/send
+#   - client scopes  mail (with 2 audience mappers), mcp:mail/read, mcp:mail/send,
+#                    mcp:mail/draft, mcp:mail/organize
 #   - client         dovecot   (introspection credentials only, no login flow)
 #   - client         mcp-mail  (only with --proxy, for AUTH_MODE=proxy, and/or
 #                               --exchange, for MAIL_TOKEN_EXCHANGE=on)
-#   - assigns the 3 scopes as DEFAULT client scopes on the Open WebUI client
+#   - assigns these scopes as DEFAULT client scopes on the Open WebUI client
+#     (remove a tool scope there afterwards to withhold its tools)
 #     (and on mcp-mail with --proxy)
 #   With --exchange instead (docs/keycloak.md, "Token exchange"): Open WebUI's
-#   client gets only the two mcp:mail/* scopes, which then carry the MCP
+#   client gets only the mcp:mail/* scopes, which then carry the MCP
 #   audience, and LOSES the mail scope; mcp-mail gets standard token exchange
 #   and the mail scope. Open WebUI's tokens then no longer work at Dovecot.
 #
@@ -101,6 +103,9 @@ fi
 mail=$(ensure_scope mail "Access your mailbox")
 read=$(ensure_scope "mcp:mail/read" "Read your email")
 send=$(ensure_scope "mcp:mail/send" "Send email on your behalf")
+draft=$(ensure_scope "mcp:mail/draft" "Save email drafts")
+organize=$(ensure_scope "mcp:mail/organize" "Flag, move and trash your email")
+tools=("$read" "$send" "$draft" "$organize")
 ensure_audience_mapper "$mail" "audience-$MCP_AUDIENCE" included.custom.audience "$MCP_AUDIENCE"
 ensure_audience_mapper "$mail" "audience-$DOVECOT_CLIENT" included.client.audience "$DOVECOT_CLIENT"
 
@@ -112,14 +117,15 @@ if [[ -z "$openwebui" ]]; then
   exit 1
 fi
 if [[ -z "$EXCHANGE" ]]; then
-  assign_default_scopes "$openwebui" "$mail" "$read" "$send"
+  assign_default_scopes "$openwebui" "$mail" "${tools[@]}"
   echo "assigned mail scopes as default on $OPENWEBUI_CLIENT" >&2
 else
   # The tool scopes carry the MCP audience; the mail scope (Dovecot's
   # audience) is only for tokens the server obtains by exchange.
-  ensure_audience_mapper "$read" "audience-$MCP_AUDIENCE" included.custom.audience "$MCP_AUDIENCE"
-  ensure_audience_mapper "$send" "audience-$MCP_AUDIENCE" included.custom.audience "$MCP_AUDIENCE"
-  assign_default_scopes "$openwebui" "$read" "$send"
+  for scope in "${tools[@]}"; do
+    ensure_audience_mapper "$scope" "audience-$MCP_AUDIENCE" included.custom.audience "$MCP_AUDIENCE"
+  done
+  assign_default_scopes "$openwebui" "${tools[@]}"
   if kc get "clients/$openwebui/default-client-scopes" --fields id --format csv --noquotes | grep -qx "$mail"; then
     kc delete "clients/$openwebui/default-client-scopes/$mail"
     echo "removed the mail scope from $OPENWEBUI_CLIENT (token exchange)" >&2
@@ -138,7 +144,7 @@ if [[ -n "$PROXY_BASE_URL" ]]; then
       -s 'attributes."pkce.code.challenge.method"=S256')
     echo "created client $PROXY_CLIENT" >&2
   fi
-  assign_default_scopes "$proxy" "$mail" "$read" "$send"
+  assign_default_scopes "$proxy" "$mail" "${tools[@]}"
 fi
 
 if [[ -n "$EXCHANGE" ]]; then

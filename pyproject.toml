@@ -17,6 +17,8 @@ dependencies = [
     "fastmcp>=4.1,<5",
     "httpx2>=2.13,<3",
     "python-dotenv>=1,<2",
+    # get_attachment: text of PDF attachments. Pure Python.
+    "pypdf>=6.10,<7",
 ]
 
 [project.optional-dependencies]

@@ -62,6 +62,11 @@ class MailSettings:
     # With username_claim "email": only accept tokens whose email_verified
     # claim is true (MAIL_REQUIRE_EMAIL_VERIFIED, D24).
     require_email_verified: bool = True
+    # Empty: the folder with the \Drafts / \Trash special-use flag, else "Drafts" / "Trash".
+    drafts_folder: str = ""
+    trash_folder: str = ""
+    max_attachment_bytes: int = 10_000_000
+    max_forward_bytes: int = 25_000_000
 
 
 @dataclass(frozen=True)
@@ -124,6 +129,10 @@ def load(env: dict[str, str] | None = None) -> Settings:
         sent_folder=env["MAIL_SENT_FOLDER"].strip() if "MAIL_SENT_FOLDER" in env else "Sent",
         timeout=_int(env, "MAIL_TIMEOUT", 30),
         require_email_verified=_choice(env, "MAIL_REQUIRE_EMAIL_VERIFIED", "on", ("on", "off")) == "on",
+        drafts_folder=env.get("MAIL_DRAFTS_FOLDER", "").strip(),
+        trash_folder=env.get("MAIL_TRASH_FOLDER", "").strip(),
+        max_attachment_bytes=_int(env, "MAIL_MAX_ATTACHMENT_BYTES", 10_000_000),
+        max_forward_bytes=_int(env, "MAIL_MAX_FORWARD_BYTES", 25_000_000),
     )
 
     return Settings(

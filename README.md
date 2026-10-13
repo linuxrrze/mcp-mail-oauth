@@ -23,7 +23,7 @@ sequenceDiagram
 
     U->>OW: Log in
     OW->>KC: OIDC login (client openwebui)
-    KC-->>OW: Access token<br/>aud: mcp-mail, dovecot<br/>scope: mail, mcp:mail/read, mcp:mail/send
+    KC-->>OW: Access token<br/>aud: mcp-mail, dovecot<br/>scope: mail, mcp:mail/*
 
     U->>OW: "Show my newest mails"
     OW->>MCP: MCP tool call<br/>Authorization: Bearer (user's token)
@@ -99,7 +99,15 @@ exchange is the conforming alternative (D23). How to choose:
 | `search_messages` | `mcp:mail/read` | By sender, recipient, subject, text, date range, unread |
 | `read_message` | `mcp:mail/read` | Headers, text body, attachment list. Fetches only the text part, never attachments. Doesn't mark as read by default |
 | `get_message_info` | `mcp:mail/read` | Headers, flags, size, attachment names/types/sizes; no body |
-| `send_message` | `mcp:mail/send` | Plain-text mail from your own address, optional reply threading; copy saved to Sent |
+| `get_thread` | `mcp:mail/read` | The conversation around a message, from the folder and Sent, oldest first |
+| `get_attachment` | `mcp:mail/read` | One attachment: text, HTML, PDF text, attached emails, images |
+| `folder_status` | `mcp:mail/read` | Message and unread counts per folder |
+| `send_message` | `mcp:mail/send` | Plain-text mail from your own address; reply / reply-all with threading; copy saved to Sent |
+| `forward_message` | `mcp:mail/send` | Forwards a message unchanged, attachments included, with your comment |
+| `save_draft` | `mcp:mail/draft` | Saves a mail (or reply) to Drafts without sending it |
+| `set_flags` | `mcp:mail/organize` | Read/unread, flagged/unflagged |
+| `move_messages` | `mcp:mail/organize` | To another folder, e.g. Archive |
+| `trash_messages` | `mcp:mail/organize` | To Trash; nothing is deleted permanently |
 
 Tools whose scope is missing from the token are hidden, and `whoami` tells
 you which ones.

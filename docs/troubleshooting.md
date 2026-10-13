@@ -38,7 +38,7 @@ It never prints the token, and exits non-zero if any check fails.
 |---|---|---|
 | Server won't start: *discovery document says issuer=...* | `OIDC_ISSUER` differs from the issuer Keycloak advertises, e.g. internal vs. public hostname | `OIDC_ISSUER` = the public issuer (the `iss` in tokens). If the container can only reach Keycloak internally, set `OIDC_JWKS_URI` to the internal `.../protocol/openid-connect/certs` |
 | Every request 401, even `whoami` | Token lacks `mcp-mail` in `aud`, wrong issuer, or Open WebUI auth type isn't "OAuth" | Audience mapper in the `mail` scope, assigned **Default** (keycloak.md). Users must log in again after scope changes |
-| Only `whoami` visible ("no tools") | Token lacks `mcp:mail/read` / `mcp:mail/send` | `whoami` lists `missing_scopes`. Assign them as **Default**, not Optional |
+| Only `whoami` visible ("no tools"), or some tools missing | Token lacks `mcp:mail/read` (or `send`/`draft`/`organize` for their tools) | `whoami` lists `missing_scopes`. Assign them as **Default**, not Optional |
 | *Your access token has no 'email' claim* | User without email, or `email` scope not Default | Set the user's email; make `email` a Default scope |
 | *Your email address ... is not verified* | `email_verified` isn't true in the token (D24) | *Users → user → Email verified* on, then log in again. `MAIL_REQUIRE_EMAIL_VERIFIED=off` only if all addresses are admin-managed |
 | *IMAP authentication failed* | Dovecot rejected the token; this server already accepted it | See next section |
@@ -48,6 +48,8 @@ It never prints the token, and exits non-zero if any check fails.
 | Startup fails with a certificate error on OIDC discovery | Keycloak certificate from a private CA | `SSL_CERT_FILE` with a bundle that includes it (D21) |
 | Open WebUI can't connect; server log shows `"POST / HTTP/1.1" 404` | The configured URL lacks the endpoint path | End the URL with `/mcp`, e.g. `https://ai.example.com/mcp/mail-oauth/mcp` (reverse-proxy.md) |
 | *Keycloak refused to exchange your token for a mail token* | `MAIL_TOKEN_EXCHANGE=on` but Keycloak isn't set up for it: no token exchange on `mcp-mail`, or the token lacks `mcp-mail` in `aud` | `setup-kcadm.sh --exchange`; users log in again (keycloak.md, Token exchange) |
+| *neither MOVE nor UIDPLUS* | The IMAP server can't move messages safely | Dovecot has both; other servers need RFC 6851 MOVE or UIDPLUS |
+| Drafts/Trash land in a folder named `Drafts`/`Trash` instead of yours | The server marks no folder `\\Drafts`/`\\Trash` (RFC 6154 special-use) | `special_use` in Dovecot's mailbox config, or `MAIL_DRAFTS_FOLDER` / `MAIL_TRASH_FOLDER` |
 | *refused sender* on send | Postfix's sender-login map doesn't map the address to the login | Map each address to itself (deploy/postfix/main.cf.snippet) |
 
 ## Dovecot rejects the token

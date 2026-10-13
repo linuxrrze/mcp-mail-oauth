@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 READ_SCOPE = "mcp:mail/read"
 SEND_SCOPE = "mcp:mail/send"
-TOOL_SCOPES = [READ_SCOPE, SEND_SCOPE]
+DRAFT_SCOPE = "mcp:mail/draft"
+ORGANIZE_SCOPE = "mcp:mail/organize"
+TOOL_SCOPES = [READ_SCOPE, SEND_SCOPE, DRAFT_SCOPE, ORGANIZE_SCOPE]
 
 
 def discovery_document(issuer: str, timeout: float = 10.0) -> dict:

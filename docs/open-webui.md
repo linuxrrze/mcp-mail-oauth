@@ -60,6 +60,8 @@ can validate.
 it. Give the `mcp:mail/send` scope only to users who need to send, and keep
 Open WebUI's tool-call confirmation on if your version offers it: the tool
 description asks the model to confirm, but nothing enforces that.
+`mcp:mail/draft` is the safer alternative: the assistant writes drafts, and
+the user sends them from their mail client (keycloak.md, Tool scopes).
 
 In resource mode no browser ever talks to this server, so the URL may be an
 internal one (e.g. `http://mcp-mail:8000/mcp` in the same compose network).

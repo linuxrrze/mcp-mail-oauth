@@ -69,7 +69,7 @@ Keycloak layout:
 ```mermaid
 flowchart LR
     ow["client openwebui<br/>(existing)"] -- default scope --> mail["scope mail"]
-    ow -- default scope --> tools["scopes mcp:mail/read,<br/>mcp:mail/send"]
+    ow -- default scope --> tools["scopes mcp:mail/read, /send,<br/>/draft, /organize"]
     mail -. "aud mapper" .-> a1(["aud: mcp-mail"])
     mail -. "aud mapper" .-> a2(["aud: dovecot"])
     dc["client dovecot<br/>(all flows off)"] -- "introspects as" --> a2
@@ -83,7 +83,7 @@ access token*):
 
 ```json
 "aud": ["mcp-mail", "dovecot"],
-"scope": "openid email profile mail mcp:mail/read mcp:mail/send"
+"scope": "openid email profile mail mcp:mail/read mcp:mail/send mcp:mail/draft mcp:mail/organize"
 ```
 
 ## Token exchange
@@ -117,7 +117,7 @@ Keycloak layout:
 
 ```mermaid
 flowchart LR
-    ow["client openwebui<br/>(existing)"] -- default scope --> tools["scopes mcp:mail/read,<br/>mcp:mail/send"]
+    ow["client openwebui<br/>(existing)"] -- default scope --> tools["scopes mcp:mail/read, /send,<br/>/draft, /organize"]
     tools -. "aud mapper" .-> a1(["aud: mcp-mail"])
     mm["client mcp-mail<br/>(confidential, standard<br/>token exchange on)"] -- default scope --> mail["scope mail"]
     mail -. "aud mapper" .-> a2(["aud: dovecot"])
@@ -140,7 +140,7 @@ Token check (same place as above), for Open WebUI's token:
 
 ```json
 "aud": "mcp-mail",
-"scope": "openid email profile mcp:mail/read mcp:mail/send"
+"scope": "openid email profile mcp:mail/read mcp:mail/send mcp:mail/draft mcp:mail/organize"
 ```
 
 No `dovecot`, no `mail`: that's the point. `mcp-mail-diagnose
