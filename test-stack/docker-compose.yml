@@ -1,0 +1,147 @@
+# Disposable test stack: Keycloak + Postfix/Dovecot (OAuth) + mcp-mail-oauth,
+# configured with the files in deploy/. Everything is test-only: fixed
+# secrets, a throwaway CA, ports bound to 127.0.0.1. See test-stack/README.md.
+#
+#   docker compose -f test-stack/docker-compose.yml up -d --build
+#   docker compose -f test-stack/docker-compose.yml run --rm e2e
+#   docker compose -f test-stack/docker-compose.yml down -v
+#
+# DOVECOT=2.4 selects Dovecot 2.4 (Debian trixie) instead of 2.3 (bookworm).
+# --profile webui adds Open WebUI on http://localhost:3000.
+
+name: mcp-mail-test
+
+x-mcp-env: &mcp-env
+  AUTH_MODE: resource
+  # Tokens carry the issuer the browser sees (KC_HOSTNAME below); keys are
+  # fetched over the internal network, which skips discovery (docs/keycloak.md).
+  OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/mail
+  OIDC_JWKS_URI: http://keycloak:8080/realms/mail/protocol/openid-connect/certs
+  MCP_AUDIENCE: mcp-mail
+  BASE_URL: http://localhost:${MCP_PORT:-8000}
+  MAIL_IMAP_HOST: mail.example.com
+  MAIL_SMTP_HOST: mail.example.com
+  MAIL_CA_FILE: /certs/ca.crt
+  LOG_LEVEL: INFO
+
+services:
+  # Throwaway CA + mail certificate, and the realm to import.
+  init:
+    image: alpine:3.22
+    command: ["sh", "/prepare.sh"]
+    volumes:
+      - ./init/prepare.sh:/prepare.sh:ro
+      - ../deploy/keycloak/realm-mail.json:/realm-mail.json:ro
+      - certs:/out/certs
+      - realm:/out/realm
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION:-26.8.1}
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # One issuer for everyone: what a browser on this machine uses. Other
+      # containers call Keycloak as http://keycloak:8080; with a dynamic
+      # backchannel, token/JWKS/introspection URLs follow the request host.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8080}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - realm:/opt/keycloak/data/import:ro
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8080}:8080"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      # The image has no curl; bash can speak HTTP to the management port.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  # Postfix (submission 587, SASL via Dovecot) + Dovecot (IMAPS 993, oauth2,
+  # LMTP). The name must match the certificate, as in production.
+  mail:
+    build:
+      context: ..
+      dockerfile: test-stack/mail/Dockerfile
+      args:
+        DOVECOT: ${DOVECOT:-2.3}
+    image: mcp-mail-test-mail:${DOVECOT:-2.3}
+    hostname: mail.example.com
+    networks:
+      default:
+        aliases: [mail.example.com]
+    volumes:
+      - certs:/certs:ro
+    ports:
+      - "127.0.0.1:${IMAPS_PORT:-1993}:993"
+      - "127.0.0.1:${SUBMISSION_PORT:-1587}:587"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+
+  mcp-mail:
+    build:
+      context: ..
+    image: mcp-mail-oauth:test
+    environment: *mcp-env
+    volumes:
+      - certs:/certs:ro
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8000}:8000"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      mail:
+        condition: service_healthy
+
+  # End-to-end checks (test-stack/e2e.py), run on demand:
+  #   docker compose -f test-stack/docker-compose.yml run --rm e2e
+  e2e:
+    image: mcp-mail-oauth:test
+    profiles: [e2e]
+    entrypoint: ["python", "/e2e.py"]
+    environment:
+      <<: *mcp-env
+      KEYCLOAK_URL: http://keycloak:8080
+      MCP_URL: http://mcp-mail:8000/mcp
+    volumes:
+      - certs:/certs:ro
+      - ./e2e.py:/e2e.py:ro
+    depends_on:
+      mcp-mail:
+        condition: service_healthy
+
+  # Optional, for trying it by hand: docker compose ... --profile webui up -d
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${OPEN_WEBUI_VERSION:-v0.11.4}
+    profiles: [webui]
+    environment:
+      WEBUI_SECRET_KEY: test-stack-not-a-secret
+      WEBUI_URL: http://localhost:${WEBUI_PORT:-3000}
+      ENABLE_OAUTH_SIGNUP: "true"
+      OAUTH_PROVIDER_NAME: Keycloak
+      OPENID_PROVIDER_URL: http://keycloak:8080/realms/mail/.well-known/openid-configuration
+      OAUTH_CLIENT_ID: openwebui
+      OAUTH_CLIENT_SECRET: openwebui-test-secret
+      OPENID_REDIRECT_URI: http://localhost:${WEBUI_PORT:-3000}/oauth/oidc/callback
+      OAUTH_SCOPES: openid email profile offline_access
+    volumes:
+      - open-webui:/app/backend/data
+    ports:
+      - "127.0.0.1:${WEBUI_PORT:-3000}:8080"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      mcp-mail:
+        condition: service_healthy
+
+volumes:
+  certs:
+  realm:
+  open-webui:

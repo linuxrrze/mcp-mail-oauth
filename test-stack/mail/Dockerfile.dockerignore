@@ -1,0 +1,5 @@
+# Build context for test-stack/mail/Dockerfile is the repo root; it needs only these.
+*
+!deploy/dovecot
+!deploy/postfix
+!test-stack/mail
