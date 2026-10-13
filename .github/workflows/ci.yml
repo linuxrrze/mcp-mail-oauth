@@ -1,0 +1,239 @@
+# Test, scan, version and publish the mcp-mail-oauth image.
+#
+#   pull request -> tests + repo scan + image build/scan/smoke test (nothing published)
+#   push to main -> the same, then: push image, tag vX.Y.Z, create release
+#
+# Publishing happens only after every gate passed, and it pushes the very
+# image that was scanned and smoke-tested (no rebuild). See docs/ci.md and
+# docs/decisions.md D19/D20.
+#
+# Third-party actions are pinned to full commit SHAs (tags can be moved;
+# there have been tag-hijacking incidents with popular actions).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (auto = from commit messages)"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+permissions:
+  contents: read
+
+# Releases on main run strictly one after another, so two pushes can never
+# compute the same next version. PR runs cancel superseded ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Override with repository variables, e.g. for a Gitea/Harbor registry.
+  REGISTRY: ${{ vars.REGISTRY || 'ghcr.io' }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME || github.repository }}
+  TRIVY_VERSION: v0.75.0
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # setuptools-scm derives the version from tags
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Test suite
+        run: pytest -q
+      - name: Check deploy files
+        if: matrix.python == '3.12'
+        run: |
+          python -m json.tool deploy/keycloak/realm-mail.json > /dev/null
+          bash -n deploy/keycloak/setup-kcadm.sh
+
+  scan-repo:
+    name: Trivy (repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Secrets committed by mistake, and misconfigurations (Dockerfile,
+      # compose). Package vulnerabilities are checked on the built image,
+      # which has the exact resolved dependency versions.
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: .
+          scanners: secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+  version:
+    name: Next version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      tag: ${{ steps.next.outputs.tag }}
+      release: ${{ steps.next.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: next
+        run: python3 scripts/next_version.py --bump "${{ inputs.bump || 'auto' }}"
+
+  image:
+    name: Build, scan, publish
+    needs: [test, scan-repo, version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the vX.Y.Z tag and release
+      packages: write # push to ghcr.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide what this run publishes
+        id: plan
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME,,}"  # registries require lowercase
+          if [[ "$GITHUB_EVENT_NAME" != "pull_request" && "$GITHUB_REF" == "refs/heads/main" && "$RELEASE" == "true" ]]; then
+            publish=true
+            build_version="$VERSION"
+          else
+            publish=false
+            # PEP 440 dev version, so a non-release image can't pass for a release.
+            build_version="${VERSION:-0.0.0}.dev0+g${GITHUB_SHA::7}"
+          fi
+          {
+            echo "image=$image"
+            echo "publish=$publish"
+            echo "build_version=$build_version"
+          } >> "$GITHUB_OUTPUT"
+          echo "image=$image publish=$publish version=$build_version"
+
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: meta
+        with:
+          images: ${{ steps.plan.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.tag }},enable=${{ steps.plan.outputs.publish }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.tag }},enable=${{ steps.plan.outputs.publish }}
+            type=semver,pattern={{major}},value=${{ needs.version.outputs.tag }},enable=${{ steps.plan.outputs.publish == 'true' && !startsWith(needs.version.outputs.version, '0.') }}
+            type=raw,value=latest,enable=${{ steps.plan.outputs.publish }}
+            type=sha
+          labels: |
+            org.opencontainers.image.version=${{ steps.plan.outputs.build_version }}
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Build once into the local Docker daemon. Everything below (scan,
+      # smoke test, push) uses this one image.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          build-args: VERSION=${{ steps.plan.outputs.build_version }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            mcp-mail-oauth:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          # A cache backend problem (e.g. on Gitea runners) must not fail the build.
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Trivy (image)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          image-ref: mcp-mail-oauth:ci
+          scanners: vuln,secret
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          # Fail on what can be fixed (by a base image update or a dependency
+          # bump); unfixed CVEs would block every release with no remedy.
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 8000:8000 \
+            -e OIDC_ISSUER=https://sso.example.com/realms/mail \
+            -e OIDC_JWKS_URI=https://sso.example.com/realms/mail/protocol/openid-connect/certs \
+            -e BASE_URL=http://localhost:8000 \
+            -e MAIL_IMAP_HOST=imap.example.com -e MAIL_SMTP_HOST=smtp.example.com \
+            mcp-mail-oauth:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8000/healthz && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8000/healthz | grep -qx ok
+          # Unauthenticated MCP request must be refused, pointing at the metadata.
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/mcp \
+            -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -d '{}')
+          test "$status" = 401
+          curl -fsS http://localhost:8000/.well-known/oauth-protected-resource/mcp | grep -q sso.example.com
+          # The image reports the version it was built with.
+          docker exec smoke python -c "import mcp_mail; print(mcp_mail.__version__)" \
+            | grep -qx "${{ steps.plan.outputs.build_version }}"
+          # Runs as the unprivileged user.
+          test "$(docker exec smoke id -u)" = 10001
+      - name: Smoke test logs
+        if: always()
+        run: docker logs smoke 2>&1 | tail -50 || true
+
+      # ── Everything above passed. Publish (main + release only). ──────────
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: steps.plan.outputs.publish == 'true'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ vars.REGISTRY_USERNAME || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+
+      - name: Push the scanned image
+        if: steps.plan.outputs.publish == 'true'
+        run: docker push --all-tags "${{ steps.plan.outputs.image }}"
+
+      # The tag is created only after a successful push, so a failed run never
+      # consumes a version number.
+      - name: Tag release
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: GitHub release
+        if: steps.plan.outputs.publish == 'true' && github.server_url == 'https://github.com'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          IMAGE: ${{ steps.plan.outputs.image }}
+        run: |
+          gh release create "$TAG" --title "$TAG" --generate-notes \
+            --notes "Image: \`$IMAGE:${TAG#v}\`"

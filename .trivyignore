@@ -1,0 +1,9 @@
+# Accepted findings, one CVE ID per line. CI fails on any fixable HIGH or
+# CRITICAL finding that isn't listed here (docs/decisions.md, D20).
+#
+# Every entry needs a comment: why it doesn't apply or can't be fixed yet,
+# who accepted it, and when to look again. Example:
+#
+#   # libfoo in the base image; code path not reachable (no XML parsing).
+#   # Accepted 2026-10-13, review when python:3.12-slim updates libfoo.
+#   CVE-2026-00000

@@ -1,0 +1,16 @@
+# Dovecot 2.3: accept Keycloak access tokens via XOAUTH2 / OAUTHBEARER.
+# Include from conf.d/10-auth.conf:   !include auth-oauth2.conf.ext
+#
+# This adds a passdb only. Keep your existing userdb (passwd, sql, ldap, static
+# ...): it must resolve the login name, which is the token's `email` claim
+# (username_attribute below), to a mailbox.
+
+auth_mechanisms = $auth_mechanisms xoauth2 oauthbearer
+
+passdb {
+  driver = oauth2
+  # Restrict this passdb to the token mechanisms so password logins keep
+  # using your existing passdb.
+  mechanisms = xoauth2 oauthbearer
+  args = /etc/dovecot/dovecot-oauth2.conf.ext
+}

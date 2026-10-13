@@ -1,0 +1,24 @@
+# Dovecot 2.3 oauth2 passdb settings for Keycloak (see docs/mail-server.md).
+# chmod 0640 root:dovecot - this file contains a client secret.
+
+# Ask Keycloak about every token (RFC 7662), authenticating as the `dovecot`
+# client. Keycloak 26.6.2+ only answers active=true if that client is in the
+# token's `aud`; the `mail` client scope's audience mapper puts it there.
+# URL-encode the secret if it contains special characters.
+introspection_mode = post
+introspection_url = https://dovecot:CHANGE_ME_DOVECOT_SECRET@sso.example.com/realms/mail/protocol/openid-connect/token/introspect
+force_introspection = yes
+
+# Reject tokens Keycloak no longer considers valid (logout, revoked session).
+active_attribute = active
+active_value = true
+
+# The IMAP/SMTP login name must equal this claim. mcp-mail-oauth logs in with
+# the claim named by MAIL_USERNAME_CLAIM (default: email): keep the two equal.
+username_attribute = email
+
+# Only tokens that carry the `mail` scope may open a mailbox, not any token
+# the realm issues for any client (docs/decisions.md, D2).
+scope = mail
+
+tls_ca_cert_file = /etc/ssl/certs/ca-certificates.crt

@@ -1,0 +1,10 @@
+# Submission on 587 with mandatory STARTTLS and SASL, matching
+# mcp-mail-oauth's default MAIL_SMTP_SECURITY=starttls / MAIL_SMTP_PORT=587.
+submission inet n       -       y       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes
+  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_sender_restrictions=reject_sender_login_mismatch
+  -o smtpd_relay_restrictions=permit_sasl_authenticated,reject

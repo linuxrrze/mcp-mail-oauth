@@ -1,0 +1,26 @@
+# mcp-mail-oauth against your existing Keycloak, Dovecot/Postfix and Open WebUI.
+#
+#   cp .env.example .env   # then edit
+#   docker compose up -d
+#
+# Put a TLS-terminating reverse proxy in front and use its public URL as
+# BASE_URL. In the default AUTH_MODE=resource nothing ever redirects a
+# browser here, so the URL only needs to be reachable by Open WebUI's backend.
+
+name: mcp-mail-oauth
+
+services:
+  mcp-mail:
+    build: .
+    image: mcp-mail-oauth
+    container_name: mcp-mail
+    env_file: .env
+    volumes:
+      # Only used in AUTH_MODE=proxy; harmless otherwise.
+      - mcp-mail-data:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  mcp-mail-data:

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-mail-oauth"
+# From git tags vX.Y.Z (setuptools-scm); CI injects it for Docker builds,
+# where .git isn't in the build context (docs/decisions.md, D19).
+dynamic = ["version"]
+description = "MCP server for IMAP/SMTP mailboxes that authenticate users via OAuth2 (XOAUTH2/OAUTHBEARER) against the same OIDC provider as the MCP client"
+readme = "README.md"
+requires-python = ">=3.11"
+# Compatible-range pins (see docs/decisions.md, D14): the predecessor project
+# left everything unpinned, and this server leans on FastMCP auth internals
+# (OIDCProxy token swap, RemoteAuthProvider) that change between majors.
+dependencies = [
+    "fastmcp>=3.4,<4",
+    "httpx>=0.27,<1",
+    "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+mcp-mail-oauth = "mcp_mail.__main__:main"
+mcp-mail-diagnose = "mcp_mail.diagnose:main"
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

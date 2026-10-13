@@ -1,0 +1,12 @@
+.venv
+.git
+.env
+**/__pycache__
+.pytest_cache
+tests
+docs
+deploy
+*.egg-info
+scripts
+.github
+.trivyignore

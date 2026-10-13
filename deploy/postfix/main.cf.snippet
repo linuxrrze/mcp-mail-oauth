@@ -1,0 +1,13 @@
+# Postfix: SMTP AUTH via Dovecot's auth service, so Postfix offers exactly the
+# mechanisms Dovecot does, XOAUTH2/OAUTHBEARER included, and validates tokens
+# with the same oauth2 passdb. No OAuth configuration in Postfix itself.
+
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+
+# A user may only send as the address they authenticated as. The SASL login
+# name is the token's email claim, so a sender-login map that maps every
+# address to itself does it (needs postfix-pcre):
+smtpd_sender_login_maps = pcre:/etc/postfix/sender_login_maps.pcre
+#   /etc/postfix/sender_login_maps.pcre:
+#   /^(.+)$/   ${1}

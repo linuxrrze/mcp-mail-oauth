@@ -1,0 +1,88 @@
+# Keycloak setup
+
+What the realm needs (reasons: [decisions.md](decisions.md) D4, D5, D6):
+
+| Object | Type | Why |
+|---|---|---|
+| `mail` | client scope, **in token scope** | Dovecot requires `scope = mail`. Carries two audience mappers |
+| ├ audience `mcp-mail` | audience mapper, *included custom audience* | this server only accepts tokens with `MCP_AUDIENCE` in `aud` |
+| └ audience `dovecot` | audience mapper, *included client audience* | Keycloak 26.6.2+ returns `active: false` to an introspecting client that isn't in `aud` |
+| `mcp:mail/read`, `mcp:mail/send` | client scopes, in token scope | per-tool permissions |
+| `dovecot` | confidential client, **every flow off** | credentials for Dovecot's introspection calls, nothing else |
+| your Open WebUI client | existing | gets `mail`, `mcp:mail/read`, `mcp:mail/send` as **Default** scopes |
+
+Make sure each audience mapper has *Add to access token* and *Add to token
+introspection* **on**. Keep *lightweight access tokens* **off** for these
+clients: this server reads claims from the token itself.
+
+## Option A: script against an existing realm
+
+```bash
+kcadm.sh config credentials --server https://sso.example.com --realm master --user admin
+REALM=mail OPENWEBUI_CLIENT=openwebui deploy/keycloak/setup-kcadm.sh
+```
+
+The script is idempotent (it skips what exists) and prints the `dovecot`
+client secret for Dovecot's `introspection_url`. Variables: `REALM`
+(required), `OPENWEBUI_CLIENT` (default `openwebui`), `DOVECOT_CLIENT`
+(`dovecot`), `MCP_AUDIENCE` (`mcp-mail`, must match the server's
+`MCP_AUDIENCE`).
+
+## Option B: test realm import
+
+`deploy/keycloak/realm-mail.json` is a complete throwaway realm: the three
+clients, the scopes, and user `alice` / `alice` (`alice@example.com`). The
+secrets in it are test values.
+
+```bash
+docker run --rm -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  -v "$PWD/deploy/keycloak:/opt/keycloak/data/import:ro" quay.io/keycloak/keycloak:26.6 start-dev --import-realm
+```
+
+## Option C: by hand (admin console)
+
+1. *Client scopes → Create*: `mail`, type None, *Include in token scope* on.
+   In its *Mappers*: *By configuration → Audience* twice:
+   - name `audience-mcp-mail`, *Included Custom Audience* `mcp-mail`
+   - name `audience-dovecot`, *Included Client Audience* `dovecot`
+
+   Both with *Add to access token* and *Add to token introspection* on.
+2. *Client scopes → Create*: `mcp:mail/read` and `mcp:mail/send`, *Include in
+   token scope* on.
+3. *Clients → Create*: `dovecot`, *Client authentication* on, and **untick**
+   Standard flow, Direct access grants, and everything else. Copy the secret
+   from *Credentials*.
+4. *Clients → openwebui → Client scopes → Add client scope*: `mail`,
+   `mcp:mail/read`, `mcp:mail/send`, each as **Default**. Optional scopes are
+   only issued when requested, and Open WebUI doesn't request them.
+
+## Verify
+
+*Clients → openwebui → Client scopes → Evaluate*, pick a user, open
+*Generated access token*. It must show:
+
+```json
+"aud": ["mcp-mail", "dovecot", ...],
+"scope": "openid email profile mail mcp:mail/read mcp:mail/send",
+"email": "alice@example.com"
+```
+
+Paste it into `mcp-mail-diagnose --introspect-client-id dovecot` (see
+[troubleshooting.md](troubleshooting.md)) to check Dovecot's view too.
+
+## Proxy mode
+
+For MCP clients that can't forward a Keycloak token and instead run the MCP
+OAuth flow with Dynamic Client Registration (Claude Desktop, MCP Inspector,
+Open WebUI's "OAuth 2.1" type):
+
+1. Create a confidential client `mcp-mail` with Standard flow, redirect URI
+   `<BASE_URL>/auth/callback`, and the same three Default scopes. Or run
+   `setup-kcadm.sh --proxy https://mcp-mail.example.com`.
+2. Set `AUTH_MODE=proxy`, `OIDC_CLIENT_ID=mcp-mail`, `OIDC_CLIENT_SECRET`,
+   and a long random `JWT_SIGNING_KEY` (D13). Keep the `/data` volume.
+3. `BASE_URL` must now be reachable **by users' browsers** (Keycloak
+   redirects there after login), not just by Open WebUI.
+
+Forwarded Open WebUI tokens keep working in proxy mode. Users of DCR clients
+see FastMCP's consent page once per client (D15).

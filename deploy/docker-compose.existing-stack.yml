@@ -1,0 +1,40 @@
+# mcp-mail-oauth next to an EXISTING Open WebUI (docker), Keycloak and
+# Dovecot/Postfix. Walkthrough: docs/integration.md.
+#
+#   cp ../.env.example .env        # then edit (see docs/integration.md, step 3)
+#   docker compose -f docker-compose.existing-stack.yml up -d
+#
+# Uses the published image; nothing is built on the host.
+
+name: mcp-mail-oauth
+
+services:
+  mcp-mail:
+    # Pin a minor line: X.Y receives patch releases, never breaking changes.
+    image: ${MCP_MAIL_IMAGE:-ghcr.io/linuxrrze/mcp-mail-oauth:0.1}
+    container_name: mcp-mail
+    env_file: .env
+    restart: unless-stopped
+    # No published port: only Open WebUI talks to this server, over the shared
+    # Docker network, at http://mcp-mail:8000/mcp. Publish 8000 (behind a TLS
+    # reverse proxy) only for AUTH_MODE=proxy or for clients outside Docker.
+    networks:
+      - openwebui
+    volumes:
+      - mcp-mail-data:/data   # only used in AUTH_MODE=proxy
+    # If the mail server runs on this same host and its public name resolves to
+    # an address the container can't reach (hairpin NAT), map that name to the
+    # host. The name must stay the certificate's name, so TLS verification
+    # keeps working:
+    # extra_hosts:
+    #   - "mail.example.com:host-gateway"
+
+networks:
+  # Open WebUI's existing network. Find its name with:
+  #   docker inspect <open-webui-container> -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+  openwebui:
+    external: true
+    name: ${OPENWEBUI_NETWORK:-open-webui_default}
+
+volumes:
+  mcp-mail-data:
