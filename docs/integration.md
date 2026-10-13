@@ -51,6 +51,11 @@ Two pitfalls decide most first-time failures:
    compose file). If the certificate is from a private CA, mount the CA and
    set `MAIL_CA_FILE`.
 
+**Behind a reverse proxy under a sub-directory** (e.g. Traefik serving
+`https://ai.example.com/mcp/mail-oauth/`): see [reverse-proxy.md](reverse-proxy.md).
+It takes three routes, two of them at the host root, and `BASE_URL` must
+include the sub-directory.
+
 ## Step 1: Keycloak
 
 ```bash

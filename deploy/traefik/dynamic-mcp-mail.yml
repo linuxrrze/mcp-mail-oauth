@@ -1,0 +1,44 @@
+# Traefik (v3) file-provider configuration: mcp-mail-oauth under
+# https://ai.example.com/mcp/mail-oauth/ (MCP endpoint .../mcp/mail-oauth/mcp).
+# Same three routers as docker-compose.traefik.yml; explanation in
+# docs/reverse-proxy.md. Server side: BASE_URL=https://ai.example.com/mcp/mail-oauth
+
+http:
+  routers:
+    # Everything under the prefix, prefix stripped.
+    mcp-mail:
+      rule: "Host(`ai.example.com`) && PathPrefix(`/mcp/mail-oauth/`)"
+      entryPoints: [websecure]
+      tls: {}
+      middlewares: [mcp-mail-strip]
+      service: mcp-mail
+
+    # RFC 9728 metadata at the host root, forwarded unchanged.
+    # Optional in resource mode.
+    mcp-mail-resource-metadata:
+      rule: "Host(`ai.example.com`) && Path(`/.well-known/oauth-protected-resource/mcp/mail-oauth/mcp`)"
+      entryPoints: [websecure]
+      tls: {}
+      service: mcp-mail
+
+    # AUTH_MODE=proxy only: RFC 8414 metadata at the host root, path rewritten.
+    mcp-mail-as-metadata:
+      rule: "Host(`ai.example.com`) && Path(`/.well-known/oauth-authorization-server/mcp/mail-oauth`)"
+      entryPoints: [websecure]
+      tls: {}
+      middlewares: [mcp-mail-as-metadata-path]
+      service: mcp-mail
+
+  middlewares:
+    mcp-mail-strip:
+      stripPrefix:
+        prefixes: ["/mcp/mail-oauth"]
+    mcp-mail-as-metadata-path:
+      replacePath:
+        path: "/.well-known/oauth-authorization-server"
+
+  services:
+    mcp-mail:
+      loadBalancer:
+        servers:
+          - url: "http://mcp-mail:8000"

@@ -1,0 +1,59 @@
+# Traefik (v3, Docker provider) labels for serving mcp-mail-oauth under a
+# sub-directory, e.g. https://ai.example.com/mcp/mail-oauth/mcp.
+# Explanation: docs/reverse-proxy.md.
+#
+# Use as an override on top of the existing-stack compose file:
+#
+#   export MCP_MAIL_HOST=ai.example.com MCP_MAIL_PREFIX=/mcp/mail-oauth
+#   export TRAEFIK_NETWORK=traefik        # the network Traefik watches
+#   docker compose -f ../docker-compose.existing-stack.yml -f docker-compose.traefik.yml up -d
+#
+# and set in .env:  BASE_URL=https://${MCP_MAIL_HOST}${MCP_MAIL_PREFIX}
+# (no trailing slash: the server builds every URL it advertises from BASE_URL).
+
+services:
+  mcp-mail:
+    networks:
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+      - traefik.http.services.mcp-mail.loadbalancer.server.port=8000
+
+      # 1. Everything under the prefix, prefix stripped: the app serves /mcp,
+      #    /healthz and (proxy mode) /authorize, /token, /register, /consent,
+      #    /auth/callback. The trailing slash in PathPrefix keeps e.g.
+      #    /mcp/mail-oauth-other from matching.
+      - traefik.http.routers.mcp-mail.rule=Host(`${MCP_MAIL_HOST:-ai.example.com}`) && PathPrefix(`${MCP_MAIL_PREFIX:-/mcp/mail-oauth}/`)
+      - traefik.http.routers.mcp-mail.entrypoints=websecure
+      - traefik.http.routers.mcp-mail.tls=true
+      # - traefik.http.routers.mcp-mail.tls.certresolver=letsencrypt
+      - traefik.http.routers.mcp-mail.middlewares=mcp-mail-strip
+      - traefik.http.routers.mcp-mail.service=mcp-mail
+      - traefik.http.middlewares.mcp-mail-strip.stripprefix.prefixes=${MCP_MAIL_PREFIX:-/mcp/mail-oauth}
+
+      # 2. Protected-resource metadata (RFC 9728) lives at the HOST ROOT with
+      #    the resource path appended; the app serves exactly this path, so it
+      #    is forwarded unchanged. Optional in resource mode (Open WebUI's
+      #    "OAuth" auth type never fetches it), needed for clients that
+      #    discover authentication themselves.
+      - traefik.http.routers.mcp-mail-resource-metadata.rule=Host(`${MCP_MAIL_HOST:-ai.example.com}`) && Path(`/.well-known/oauth-protected-resource${MCP_MAIL_PREFIX:-/mcp/mail-oauth}/mcp`)
+      - traefik.http.routers.mcp-mail-resource-metadata.entrypoints=websecure
+      - traefik.http.routers.mcp-mail-resource-metadata.tls=true
+      - traefik.http.routers.mcp-mail-resource-metadata.service=mcp-mail
+
+      # 3. AUTH_MODE=proxy only: authorization-server metadata (RFC 8414).
+      #    Clients look for it at the host root with the issuer path
+      #    appended; the app serves it without the suffix, so rewrite.
+      #    Remove these lines in resource mode.
+      - traefik.http.routers.mcp-mail-as-metadata.rule=Host(`${MCP_MAIL_HOST:-ai.example.com}`) && Path(`/.well-known/oauth-authorization-server${MCP_MAIL_PREFIX:-/mcp/mail-oauth}`)
+      - traefik.http.routers.mcp-mail-as-metadata.entrypoints=websecure
+      - traefik.http.routers.mcp-mail-as-metadata.tls=true
+      - traefik.http.routers.mcp-mail-as-metadata.middlewares=mcp-mail-as-metadata-path
+      - traefik.http.routers.mcp-mail-as-metadata.service=mcp-mail
+      - traefik.http.middlewares.mcp-mail-as-metadata-path.replacepath.path=/.well-known/oauth-authorization-server
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

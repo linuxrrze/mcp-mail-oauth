@@ -83,6 +83,9 @@ walkthrough with a check after each step. In short:
 5. **Check**: ask the assistant to run `whoami`, or run
    [`mcp-mail-diagnose`](docs/troubleshooting.md) against a token.
 
+Behind Traefik or another reverse proxy, also under a sub-directory such as
+`/mcp/mail-oauth/`: see [docs/reverse-proxy.md](docs/reverse-proxy.md).
+
 Other MCP clients (Claude Desktop, MCP Inspector) can't forward a Keycloak
 token. They need `AUTH_MODE=proxy`; see [docs/keycloak.md](docs/keycloak.md#proxy-mode).
 
