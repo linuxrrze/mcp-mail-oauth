@@ -24,6 +24,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 
 from mcp_mail import mail
+from mcp_mail.auth import build_exchanger
 from mcp_mail.config import load
 
 OIDC = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080") + "/realms/mail/protocol/openid-connect"
@@ -70,13 +71,21 @@ async def main() -> None:
     settings = load()
 
     # ── Keycloak: the token Open WebUI would forward ──────────────────────────
+    exchange = settings.token_exchange
+    print(f"mode: MAIL_TOKEN_EXCHANGE={'on' if exchange else 'off'}", flush=True)
     alice = login("alice")
     c = claims(alice["access_token"])
-    aud = c["aud"] if isinstance(c["aud"], list) else [c["aud"]]
-    check("token audience names mcp-mail and dovecot (mail scope's mappers)",
-          {"mcp-mail", "dovecot"} <= set(aud), c)
-    check("token carries mail, mcp:mail/read, mcp:mail/send as default scopes",
-          {"mail", "mcp:mail/read", "mcp:mail/send"} <= set(c["scope"].split()), c["scope"])
+    aud = set(c["aud"] if isinstance(c["aud"], list) else [c["aud"]])
+    scopes = set(c["scope"].split())
+    if exchange:
+        check("token audience is mcp-mail only, not dovecot (tool scopes' mappers)",
+              "mcp-mail" in aud and "dovecot" not in aud, c)
+        check("token carries mcp:mail/read, mcp:mail/send but not mail",
+              {"mcp:mail/read", "mcp:mail/send"} <= scopes and "mail" not in scopes, c["scope"])
+    else:
+        check("token audience names mcp-mail and dovecot (mail scope's mappers)", {"mcp-mail", "dovecot"} <= aud, c)
+        check("token carries mail, mcp:mail/read, mcp:mail/send as default scopes",
+              {"mail", "mcp:mail/read", "mcp:mail/send"} <= scopes, c["scope"])
     check("token issuer is the configured OIDC_ISSUER", c["iss"] == settings.oidc_issuer, c["iss"])
     token = alice["access_token"]
 
@@ -88,12 +97,33 @@ async def main() -> None:
     check("whoami maps the token to alice@example.com", me["mailbox"] == "alice@example.com", me)
 
     # ── IMAP: Dovecot validates the same token by introspection ───────────────
-    resp = httpx2.post(f"{OIDC}/token/introspect", data={"token": token},
-                       auth=("dovecot", "dovecot-test-secret"))
-    answer = resp.json() if resp.status_code == 200 else {}
-    check("Keycloak introspection as the dovecot client: active, with the email claim",
-          answer.get("active") is True and answer.get("email") == "alice@example.com",
-          {"status": resp.status_code, "keys": sorted(answer)})
+    def introspect(t: str) -> dict:
+        resp = httpx2.post(f"{OIDC}/token/introspect", data={"token": t}, auth=("dovecot", "dovecot-test-secret"))
+        return resp.json() if resp.status_code == 200 else {"status": resp.status_code}
+
+    if exchange:
+        # The point of the mode: what Open WebUI holds doesn't open the mailbox.
+        answer = introspect(token)
+        check("Keycloak introspection as dovecot: Open WebUI's token is NOT active for Dovecot",
+              answer.get("active") is False, sorted(answer))
+        try:
+            await asyncio.to_thread(mail.list_folders, settings.mail, "alice@example.com", token)
+            direct = "IMAP login succeeded"
+        except mail.MailAuthError:
+            direct = None
+        check("Open WebUI's token alone can't log in to IMAP", direct is None, direct)
+        mail_token = await build_exchanger(settings).mail_token(token)
+        mc = claims(mail_token)
+        maud = set(mc["aud"] if isinstance(mc["aud"], list) else [mc["aud"]])
+        check("exchanged token: issued to mcp-mail, audience dovecot, scope mail, same user",
+              mc.get("azp") == "mcp-mail" and "dovecot" in maud and "mail" in mc["scope"].split()
+              and mc.get("email") == "alice@example.com" and mc.get("sub") == c.get("sub"),
+              {k: mc.get(k) for k in ("azp", "aud", "scope", "email")})
+    else:
+        mail_token = token
+    answer = introspect(mail_token)
+    check("Keycloak introspection as dovecot: the mail token is active, with the email claim",
+          answer.get("active") is True and answer.get("email") == "alice@example.com", sorted(answer))
     folders = await tool(token, "list_folders")
     names = {f["name"] for f in folders["result"]} if isinstance(folders, dict) and "result" in folders else \
         {f["name"] for f in folders}
@@ -123,16 +153,16 @@ async def main() -> None:
 
     # ── The other SASL mechanism, without the MCP layer ───────────────────────
     bearer = dataclasses.replace(settings.mail, sasl_mechanism="OAUTHBEARER")
-    folders = await asyncio.to_thread(mail.list_folders, bearer, "alice@example.com", token)
+    folders = await asyncio.to_thread(mail.list_folders, bearer, "alice@example.com", mail_token)
     check("IMAP login with OAUTHBEARER", any(f["name"] == "INBOX" for f in folders), folders)
-    with mail.smtp_session(bearer, "alice@example.com", token):
+    with mail.smtp_session(bearer, "alice@example.com", mail_token):
         pass
     check("SMTP login with OAUTHBEARER", True)
 
     # ── Postfix: a user can only send as themselves ───────────────────────────
     refused = None
     try:
-        with mail.smtp_session(settings.mail, "alice@example.com", token) as smtp:
+        with mail.smtp_session(settings.mail, "alice@example.com", mail_token) as smtp:
             smtp.sendmail("bob@example.com", ["bob@example.com"], f"Subject: {subject} spoof\r\n\r\nx")
     except (smtplib.SMTPSenderRefused, smtplib.SMTPRecipientsRefused) as exc:
         refused = exc
@@ -147,7 +177,8 @@ async def main() -> None:
         rejected, detail = False, "IMAP login still worked after logout"
     except ToolError as exc:
         rejected, detail = "IMAP authentication failed" in str(exc), str(exc)
-    check("after logout, Dovecot rejects the still-unexpired token", rejected, detail)
+    check("after logout, Dovecot rejects the still-unexpired token"
+          + (" (and the cached exchanged one)" if exchange else ""), rejected, detail)
 
     # ── Tokens the MCP server must not accept ─────────────────────────────────
     resp = httpx2.post(MCP_URL, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},

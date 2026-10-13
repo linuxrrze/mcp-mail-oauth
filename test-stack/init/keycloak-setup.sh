@@ -5,19 +5,23 @@ set -euo pipefail
 kcadm.sh config credentials --server http://keycloak:8080 --realm master --user admin --password admin
 
 export REALM=mail OPENWEBUI_CLIENT=openwebui
-echo "== setup-kcadm.sh --proxy (first run)"
-bash /setup-kcadm.sh --proxy http://localhost:8000 > /dev/null
+args=(--proxy http://localhost:8000)
+[[ "${MAIL_TOKEN_EXCHANGE:-off}" == on ]] && args+=(--exchange)
+echo "== setup-kcadm.sh ${args[*]} (first run)"
+bash /setup-kcadm.sh "${args[@]}" > /dev/null
 
-echo "== setup-kcadm.sh --proxy (second run: must change nothing)"
-second=$(bash /setup-kcadm.sh --proxy http://localhost:8000 2>&1 >/dev/null)
+echo "== setup-kcadm.sh ${args[*]} (second run: must change nothing)"
+second=$(bash /setup-kcadm.sh "${args[@]}" 2>&1 >/dev/null)
 echo "$second"
-if grep -q '^created' <<<"$second"; then
+if grep -Eq '^(created|enabled|removed)' <<<"$second"; then
   echo "setup-kcadm.sh is not idempotent" >&2
   exit 1
 fi
 
-# Test-only: the mail image's introspection_url has a fixed secret baked in;
-# give the dovecot client that secret instead of the generated one.
-id=$(kcadm.sh get clients -r mail -q clientId=dovecot --fields id --format csv --noquotes)
-kcadm.sh update "clients/$id" -r mail -s secret=dovecot-test-secret
+# Test-only: fixed secrets instead of the generated ones (the mail image's
+# introspection_url and mcp-mail's OIDC_CLIENT_SECRET have them baked in).
+for client in dovecot mcp-mail; do
+  id=$(kcadm.sh get clients -r mail -q clientId=$client --fields id --format csv --noquotes)
+  kcadm.sh update "clients/$id" -r mail -s secret=$client-test-secret
+done
 echo "keycloak-setup done"

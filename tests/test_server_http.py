@@ -164,6 +164,31 @@ async def test_mail_layer_gets_the_callers_token_and_email(client, make_token, m
     assert seen == {"username": "bob@example.com", "token": token, "folder": "Archiv", "limit": 5}
 
 
+async def test_with_token_exchange_the_mail_layer_gets_the_exchanged_token(settings, keypair, make_token, monkeypatch):
+    """MAIL_TOKEN_EXCHANGE=on: the incoming token never reaches the mail server."""
+    seen = {}
+
+    class FakeExchanger:
+        async def mail_token(self, subject):
+            seen["subject"] = subject
+            return "exchanged-mail-token"
+
+    def fake_list_folders(cfg, username, token):
+        seen.update(username=username, token=token)
+        return []
+
+    monkeypatch.setattr(mail, "list_folders", fake_list_folders)
+    verifier = auth_module.build_token_verifier(settings, public_key=keypair.public_key)
+    app = create_server(settings, auth=auth_module.build_auth(settings, verifier),
+                        exchanger=FakeExchanger()).http_app(path="/mcp", stateless_http=True, json_response=True)
+    token = make_token()
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="https://x") as c:
+            resp = await rpc(c, token, "tools/call", {"name": "list_folders", "arguments": {}})
+    assert resp.status_code == 200 and not resp.json()["result"].get("isError"), resp.text
+    assert seen == {"subject": token, "username": "alice@example.com", "token": "exchanged-mail-token"}
+
+
 async def test_missing_username_claim_is_a_clear_tool_error(client, make_token):
     result = await call(client, make_token(email=None), "list_folders")
     assert result["isError"]

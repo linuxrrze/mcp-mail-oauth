@@ -28,6 +28,7 @@ from fastmcp.server.auth.oidc_proxy import OIDCProxy
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 from .config import ConfigError, Settings
+from .exchange import TokenExchanger
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +37,15 @@ SEND_SCOPE = "mcp:mail/send"
 TOOL_SCOPES = [READ_SCOPE, SEND_SCOPE]
 
 
-def discover_jwks_uri(issuer: str, timeout: float = 10.0) -> str:
-    """Read jwks_uri from the issuer's OIDC discovery document.
+def discovery_document(issuer: str, timeout: float = 10.0) -> dict:
+    """The issuer's OIDC discovery document, with its `issuer` checked.
 
-    Also checks that the document's `issuer` equals OIDC_ISSUER exactly. A
-    mismatch almost always means Keycloak is being reached under a different
-    hostname than the one it puts in tokens (typical in Docker: internal
-    http://keycloak:8080 vs. public https://sso.example.com). Every token
-    would then fail the `iss` check, so the server refuses to start rather
-    than rejecting every user later with nothing but a 401.
+    The document's `issuer` must equal OIDC_ISSUER exactly. A mismatch almost
+    always means Keycloak is being reached under a different hostname than the
+    one it puts in tokens (typical in Docker: internal http://keycloak:8080
+    vs. public https://sso.example.com). Every token would then fail the `iss`
+    check, so the server refuses to start rather than rejecting every user
+    later with nothing but a 401.
     """
     url = f"{issuer}/.well-known/openid-configuration"
     try:
@@ -55,8 +56,8 @@ def discover_jwks_uri(issuer: str, timeout: float = 10.0) -> str:
         raise ConfigError(
             f"Could not load OIDC discovery from {url}: {exc}. If Keycloak is only "
             "reachable from this container under an internal URL, keep OIDC_ISSUER "
-            "set to the public issuer and set OIDC_JWKS_URI to the internal "
-            ".../protocol/openid-connect/certs URL."
+            "set to the public issuer and set OIDC_JWKS_URI (and, with token exchange, "
+            "OIDC_TOKEN_ENDPOINT) to the internal .../protocol/openid-connect/... URLs."
         ) from exc
     if document.get("issuer", "").rstrip("/") != issuer:
         raise ConfigError(
@@ -64,7 +65,21 @@ def discover_jwks_uri(issuer: str, timeout: float = 10.0) -> str:
             f"{document.get('issuer')!r}. OIDC_ISSUER must be the exact `iss` "
             "value in the tokens (Keycloak: <public frontend URL>/realms/<realm>)."
         )
-    return document["jwks_uri"]
+    return document
+
+
+def discover_jwks_uri(issuer: str, timeout: float = 10.0) -> str:
+    """Read jwks_uri from the issuer's OIDC discovery document."""
+    return discovery_document(issuer, timeout)["jwks_uri"]
+
+
+def build_exchanger(settings: Settings) -> TokenExchanger | None:
+    """The RFC 8693 exchanger for MAIL_TOKEN_EXCHANGE=on, else None (D23)."""
+    if not settings.token_exchange:
+        return None
+    endpoint = settings.oidc_token_endpoint or discovery_document(settings.oidc_issuer)["token_endpoint"]
+    return TokenExchanger(endpoint, settings.oidc_client_id, settings.oidc_client_secret,
+                          settings.mail_token_audience)
 
 
 def build_token_verifier(settings: Settings, *, jwks_uri: str | None = None, public_key: str | None = None) -> JWTVerifier:

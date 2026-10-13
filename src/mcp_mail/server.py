@@ -19,8 +19,9 @@ from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__, mail
-from .auth import READ_SCOPE, SEND_SCOPE, TOOL_SCOPES, build_auth
+from .auth import READ_SCOPE, SEND_SCOPE, TOOL_SCOPES, build_auth, build_exchanger
 from .config import Settings
+from .exchange import TokenExchanger, TokenExchangeError
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,11 @@ def client_settings(settings: Settings) -> list[str]:
         f"  Tokens must come from {settings.oidc_issuer}, with {settings.mcp_audience!r} in aud"
         f" and the scopes {', '.join(TOOL_SCOPES)} (Keycloak: Default client scopes)",
     ]
+    if settings.token_exchange:
+        lines.append(
+            f"  MAIL_TOKEN_EXCHANGE=on: mail-server tokens are exchanged by client {settings.oidc_client_id!r}"
+            f" (audience {settings.mail_token_audience!r}); the client's own token needs no `mail` scope"
+        )
     if settings.auth_mode == "proxy":
         lines += [
             "  AUTH_MODE=proxy: other MCP clients (or Open WebUI with Auth: OAuth 2.1) can sign in through",
@@ -85,9 +91,11 @@ def http_middleware(settings: Settings) -> list[Middleware]:
 def _identity(settings: Settings, token: AccessToken) -> tuple[str, str]:
     """(mailbox username, bearer token) for this request.
 
-    The username comes from a claim of the very token that authenticates the
-    mail session (D7), so it can't drift from what Dovecot derives from the
-    same token via username_attribute, and the model can't pick another mailbox.
+    The username comes from a claim of the incoming token (D7), so the model
+    can't pick another mailbox. Without token exchange the same token is the
+    mail credential, so it can't drift from what Dovecot derives via
+    username_attribute; with exchange, Keycloak issues the mail token for the
+    same user and session.
     """
     claim = settings.mail.username_claim
     username = (token.claims or {}).get(claim)
@@ -108,7 +116,8 @@ async def _run(func, *args, **kwargs) -> Any:
         raise ToolError(str(exc)) from None
 
 
-def create_server(settings: Settings, auth: AuthProvider | None = None) -> FastMCP:
+def create_server(settings: Settings, auth: AuthProvider | None = None,
+                  exchanger: TokenExchanger | None = None) -> FastMCP:
     mcp = FastMCP(
         "mcp-mail-oauth",
         version=__version__,
@@ -120,6 +129,19 @@ def create_server(settings: Settings, auth: AuthProvider | None = None) -> FastM
         auth=auth if auth is not None else build_auth(settings),
     )
     cfg = settings.mail
+    if exchanger is None:
+        exchanger = build_exchanger(settings)
+
+    async def credentials(token: AccessToken) -> tuple[str, str]:
+        """(mailbox username, mail-server token): the incoming token itself,
+        or with MAIL_TOKEN_EXCHANGE=on a separate one exchanged for it (D23)."""
+        username, bearer = _identity(settings, token)
+        if exchanger is None:
+            return username, bearer
+        try:
+            return username, await exchanger.mail_token(bearer)
+        except TokenExchangeError as exc:
+            raise ToolError(str(exc)) from None
 
     @mcp.custom_route("/healthz", methods=["GET"])
     async def healthz(request: Request) -> PlainTextResponse:
@@ -140,13 +162,14 @@ def create_server(settings: Settings, auth: AuthProvider | None = None) -> FastM
             "audience": claims.get("aud"),
             "scopes": sorted(scopes),
             "missing_scopes": [s for s in TOOL_SCOPES if s not in scopes],
+            "mail_login": "exchanged credential (RFC 8693)" if exchanger else "forwarded credential",
             "expires_in_seconds": int(token.expires_at - time.time()) if token.expires_at else None,
         }
 
     @mcp.tool(auth=require_scopes(READ_SCOPE), annotations=READ_ONLY)
     async def list_folders(token: AccessToken = CurrentAccessToken()) -> list[dict]:
         """List the mailbox's folders (name and IMAP flags such as \\Sent, \\Trash)."""
-        return await _run(mail.list_folders, cfg, *_identity(settings, token))
+        return await _run(mail.list_folders, cfg, *(await credentials(token)))
 
     @mcp.tool(auth=require_scopes(READ_SCOPE), annotations=READ_ONLY)
     async def list_messages(
@@ -158,7 +181,7 @@ def create_server(settings: Settings, auth: AuthProvider | None = None) -> FastM
     ) -> dict:
         """List messages in a folder, newest first, with sender, subject, date and
         read state. Use offset to page further back."""
-        return await _run(mail.list_messages, cfg, *_identity(settings, token), folder, limit, offset, unread_only)
+        return await _run(mail.list_messages, cfg, *(await credentials(token)), folder, limit, offset, unread_only)
 
     @mcp.tool(auth=require_scopes(READ_SCOPE), annotations=READ_ONLY)
     async def search_messages(
@@ -176,7 +199,7 @@ def create_server(settings: Settings, auth: AuthProvider | None = None) -> FastM
         """Search a folder (server-side IMAP SEARCH, substring matching). All given
         criteria must match. Returns newest matches first."""
         return await _run(
-            mail.search_messages, cfg, *_identity(settings, token), folder, limit,
+            mail.search_messages, cfg, *(await credentials(token)), folder, limit,
             from_=sender, to=recipient, subject=subject, text=text,
             since=since, before=before, unread_only=unread_only,
         )
@@ -191,7 +214,7 @@ def create_server(settings: Settings, auth: AuthProvider | None = None) -> FastM
     ) -> dict:
         """Read one message: headers, plain-text body (HTML converted to text) and
         the list of attachments. Does not mark it as read unless mark_read is set."""
-        return await _run(mail.read_message, cfg, *_identity(settings, token), folder, uid, max_chars, mark_read)
+        return await _run(mail.read_message, cfg, *(await credentials(token)), folder, uid, max_chars, mark_read)
 
     @mcp.tool(auth=require_scopes(SEND_SCOPE), annotations={"destructiveHint": False, "openWorldHint": True})
     async def send_message(
@@ -207,7 +230,7 @@ def create_server(settings: Settings, auth: AuthProvider | None = None) -> FastM
         """Send a plain-text email from the signed-in user's own address and save a
         copy to the Sent folder. This really sends mail: confirm with the user first."""
         return await _run(
-            mail.send_message, cfg, *_identity(settings, token),
+            mail.send_message, cfg, *(await credentials(token)),
             to=to, subject=subject, body=body, cc=cc, bcc=bcc,
             reply_to_uid=reply_to_uid, reply_folder=reply_folder,
         )
