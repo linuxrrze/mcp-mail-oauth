@@ -21,6 +21,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from email import message_from_bytes, policy
+from email.errors import MessageError
+from email.headerregistry import Address
 from email.message import EmailMessage
 from email.utils import formatdate, getaddresses, make_msgid
 from html.parser import HTMLParser
@@ -293,7 +295,7 @@ def _select(conn: imaplib.IMAP4, folder: str, *, readonly: bool = True) -> None:
 
 def _check_uid(uid: str) -> str:
     uid = str(uid).strip()
-    if not uid.isdigit():
+    if not re.fullmatch(r"[0-9]+", uid):  # not isdigit(): that accepts "²" too
         raise MailRequestError(f"Invalid message UID {uid!r}.")
     return uid
 
@@ -459,37 +461,220 @@ def html_to_text(html: str) -> str:
     return re.sub(r"\n\s*\n+", "\n\n", text).strip()
 
 
-def parse_message(raw: bytes, max_chars: int) -> dict:
-    msg = message_from_bytes(raw, policy=policy.default)
-    body_part = msg.get_body(preferencelist=("plain", "html"))
-    body = ""
-    if body_part is not None:
-        try:
-            content = body_part.get_content()
-        except (LookupError, UnicodeDecodeError):
-            content = body_part.get_payload(decode=True).decode("utf-8", errors="replace")
-        body = html_to_text(content) if body_part.get_content_type() == "text/html" else content
-    max_chars = max(1, min(int(max_chars), MAX_BODY_CHARS))
-    truncated = len(body) > max_chars
+# ── Message structure (BODYSTRUCTURE) ────────────────────────────────────────
+#
+# Reading a message fetches its BODYSTRUCTURE, its header and the first bytes
+# of the one text part shown, never the whole message: a 50 MB attachment
+# would otherwise be downloaded, in full, just to report its name and size.
+
+def _response_bytes(data: list) -> bytes:
+    """imaplib's FETCH response back as one byte string, literals inline.
+
+    imaplib splits a response at each literal: ('... {N}', <N bytes>) tuples,
+    followed by plain bytes for the rest of the line."""
+    out = b""
+    for item in data:
+        if isinstance(item, tuple):
+            out += item[0] + b"\r\n" + item[1]
+        elif item:
+            out += item
+    return out
+
+
+_LITERAL_RE = re.compile(rb"\{(\d+)\+?\}\r\n")
+
+
+def parse_sexp(data: bytes) -> list:
+    """Parse an IMAP response line into nested lists of str (NIL -> None)."""
+    stack: list[list] = [[]]
+    pos, end = 0, len(data)
+    while pos < end:
+        c = data[pos:pos + 1]
+        if c in (b" ", b"\r", b"\n"):
+            pos += 1
+        elif c == b"(":
+            stack.append([])
+            pos += 1
+        elif c == b")":
+            if len(stack) == 1:
+                raise MailRequestError("Malformed IMAP response.")
+            done = stack.pop()
+            stack[-1].append(done)
+            pos += 1
+        elif c == b'"':
+            pos += 1
+            buf = bytearray()
+            while pos < end and data[pos:pos + 1] != b'"':
+                if data[pos:pos + 1] == b"\\":
+                    pos += 1
+                buf += data[pos:pos + 1]
+                pos += 1
+            pos += 1
+            stack[-1].append(buf.decode("utf-8", errors="replace"))
+        elif c == b"{" and (m := _LITERAL_RE.match(data, pos)):
+            start = m.end()
+            stack[-1].append(data[start:start + int(m.group(1))].decode("utf-8", errors="replace"))
+            pos = start + int(m.group(1))
+        else:
+            start = pos
+            while pos < end and data[pos:pos + 1] not in (b" ", b"(", b")", b"\r", b"\n"):
+                if data[pos:pos + 1] == b"[":  # BODY[...] may contain spaces and parens
+                    close = data.find(b"]", pos)
+                    pos = close if close != -1 else end
+                pos += 1
+            atom = data[start:pos].decode("utf-8", errors="replace")
+            stack[-1].append(None if atom.upper() == "NIL" else atom)
+    return stack[0]
+
+
+def _params(value) -> dict[str, str]:
+    if not isinstance(value, list):
+        return {}
+    return {str(k).lower(): v for k, v in zip(value[::2], value[1::2]) if isinstance(k, str) and isinstance(v, str)}
+
+
+def _param_header(params: dict[str, str]) -> str:
+    return "".join(
+        f'; {k}="' + re.sub(r"[\x00-\x1f]", "", v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        for k, v in params.items() if re.fullmatch(r"[a-z0-9*_.-]+", k)
+    )
+
+
+def _filename(part: dict) -> str | None:
+    """Filename via the email package, so RFC 2231 (filename*=) and
+    RFC 2047 encoded words in parameters are decoded the usual way."""
+    headers = (f"Content-Type: {part['content_type']}{_param_header(part['params'])}\n"
+               f"Content-Disposition: {part['disposition'] or 'attachment'}{_param_header(part['dparams'])}\n\n")
+    try:
+        return message_from_bytes(headers.encode("utf-8", errors="replace"), policy=policy.default).get_filename()
+    except Exception:  # a malformed parameter must not break reading the message
+        return None
+
+
+def _leaf(node: list, section: str) -> dict:
+    def at(i):
+        return node[i] if len(node) > i else None
+
+    maintype = (at(0) or "application").lower()
+    subtype = (at(1) or "octet-stream").lower()
+    # Extension data follows the basic fields, whose count depends on the type.
+    ext = 8 if maintype == "text" else 10 if (maintype, subtype) == ("message", "rfc822") else 7
+    disposition = at(ext + 1)
+    try:
+        size = int(at(6) or 0)
+    except ValueError:
+        size = 0
+    return {
+        "section": section,
+        "content_type": f"{maintype}/{subtype}",
+        "params": _params(at(2)),
+        "encoding": (at(5) or "7bit").lower(),
+        "size": size,
+        "disposition": disposition[0].lower() if isinstance(disposition, list) and isinstance(disposition[0], str) else None,
+        "dparams": _params(disposition[1]) if isinstance(disposition, list) and len(disposition) > 1 else {},
+    }
+
+
+def flatten_bodystructure(node: list, section: str = "") -> list[dict]:
+    """The leaf parts of a BODYSTRUCTURE, with their IMAP section numbers."""
+    if node and isinstance(node[0], list):  # multipart: children, then the subtype
+        parts: list[dict] = []
+        index = 0
+        for child in node:
+            if not isinstance(child, list):
+                break  # the subtype: children are over
+            index += 1
+            parts += flatten_bodystructure(child, f"{section}.{index}" if section else str(index))
+        return parts
+    return [_leaf(node, section or "1")]
+
+
+def split_parts(parts: list[dict]) -> tuple[dict | None, list[dict]]:
+    """(the text part to show, the attachments), like
+    EmailMessage.get_body(("plain", "html")) and iter_attachments()."""
+    for part in parts:
+        part["filename"] = _filename(part)
+
+    def is_text_body(part: dict) -> bool:
+        return (part["content_type"] in ("text/plain", "text/html")
+                and part["disposition"] != "attachment" and not part["filename"])
+
+    candidates = [p for p in parts if is_text_body(p)]
+    body = next((p for p in candidates if p["content_type"] == "text/plain"), None) or \
+        next(iter(candidates), None)
     attachments = [
         {
-            "filename": part.get_filename() or "(unnamed)",
-            "content_type": part.get_content_type(),
-            "size": len(part.get_payload(decode=True) or b""),
+            "filename": part["filename"] or "(unnamed)",
+            "content_type": part["content_type"],
+            # BODYSTRUCTURE gives the encoded size. Base64 is 4 bytes per 3, in
+            # lines of 76 + CRLF: 57 decoded bytes per 78. An estimate, then.
+            "size": part["size"] * 57 // 78 if part["encoding"] == "base64" else part["size"],
         }
-        for part in msg.iter_attachments()
+        for part in parts if not is_text_body(part)
     ]
+    return body, attachments
+
+
+def decode_part(data: bytes, part: dict, complete: bool) -> str:
+    """Transfer- and charset-decode a (possibly truncated) part."""
+    encoding = part["encoding"]
+    if encoding == "base64":
+        compact = re.sub(rb"[^A-Za-z0-9+/=]", b"", data)
+        compact = compact[:len(compact) - len(compact) % 4]
+        try:
+            data = base64.b64decode(compact)
+        except (binascii.Error, ValueError):
+            data = b""
+    elif encoding == "quoted-printable":
+        if not complete:  # don't decode a cut-off "=4" or soft line break
+            data = re.sub(rb"=[0-9A-Fa-f]?$", b"", data)
+        data = binascii.a2b_qp(data)
+    charset = part["params"].get("charset") or "us-ascii"
+    try:
+        text = data.decode(charset, errors="replace")
+    except LookupError:
+        text = data.decode("utf-8", errors="replace")
+    if charset.lower() in ("us-ascii", "ascii") and "\ufffd" in text:
+        text = data.decode("utf-8", errors="replace")  # undeclared 8-bit, usually UTF-8
+    if not complete:
+        text = text.rstrip("\ufffd")  # a multi-byte character cut in half
+    return text.replace("\r\n", "\n")
+
+
+def _headers_dict(headers) -> dict:
     return {
-        "from": str(msg.get("From", "")),
-        "to": str(msg.get("To", "")),
-        "cc": str(msg.get("Cc", "")),
-        "subject": str(msg.get("Subject", "")),
-        "date": str(msg.get("Date", "")),
-        "message_id": str(msg.get("Message-ID", "")),
-        "body": body[:max_chars],
-        "body_truncated": truncated,
-        "attachments": attachments,
+        "from": str(headers.get("From", "")),
+        "to": str(headers.get("To", "")),
+        "cc": str(headers.get("Cc", "")),
+        "subject": str(headers.get("Subject", "")),
+        "date": str(headers.get("Date", "")),
+        "message_id": str(headers.get("Message-ID", "")),
     }
+
+
+def _fetch_overview(conn: imaplib.IMAP4, uid: str) -> tuple[dict, dict | None, list[dict]]:
+    """(headers + flags + size, text part, attachments), without any body."""
+    typ, data = conn.uid("FETCH", uid, "(UID FLAGS RFC822.SIZE BODYSTRUCTURE)")
+    if typ != "OK":
+        raise MailRequestError(f"FETCH failed for UID {uid}.")
+    response = _response_bytes(data)
+    if not response.strip():
+        raise MailRequestError(f"No message with UID {uid} in this folder.")
+    parsed = parse_sexp(response)
+    attrs = next((item for item in parsed if isinstance(item, list)), [])
+    fields = {str(k).upper(): v for k, v in zip(attrs[::2], attrs[1::2]) if isinstance(k, str)}
+    if not isinstance(fields.get("BODYSTRUCTURE"), list):
+        raise MailRequestError(f"No message with UID {uid} in this folder.")
+    body, attachments = split_parts(flatten_bodystructure(fields["BODYSTRUCTURE"]))
+    flags = fields.get("FLAGS") if isinstance(fields.get("FLAGS"), list) else []
+    headers = message_from_bytes(_fetch_raw(conn, uid, "BODY.PEEK[HEADER]"), policy=policy.default)
+    overview = {
+        **_headers_dict(headers),
+        "unread": "\\Seen" not in flags,
+        "flagged": "\\Flagged" in flags,
+        "size": int(fields["RFC822.SIZE"]) if str(fields.get("RFC822.SIZE", "")).isdigit() else None,
+    }
+    return overview, body, attachments
 
 
 def _fetch_raw(conn: imaplib.IMAP4, uid: str, part: str = "BODY.PEEK[]") -> bytes:
@@ -502,39 +687,84 @@ def _fetch_raw(conn: imaplib.IMAP4, uid: str, part: str = "BODY.PEEK[]") -> byte
     raise MailRequestError(f"No message with UID {uid} in this folder.")
 
 
+def message_info(settings: MailSettings, username: str, token: str, folder: str, uid: str) -> dict:
+    """Headers, flags, size and attachment list; no body is downloaded."""
+    uid = _check_uid(uid)
+    with imap_session(settings, username, token) as conn:
+        _select(conn, folder)
+        overview, body, attachments = _fetch_overview(conn, uid)
+    return {"uid": uid, "folder": folder, **overview,
+            "body_type": body["content_type"] if body else None, "attachments": attachments}
+
+
 def read_message(
     settings: MailSettings, username: str, token: str, folder: str, uid: str, max_chars: int, mark_read: bool
 ) -> dict:
     uid = _check_uid(uid)
+    max_chars = max(1, min(int(max_chars), MAX_BODY_CHARS))
     with imap_session(settings, username, token) as conn:
         _select(conn, folder, readonly=not mark_read)
-        result = parse_message(_fetch_raw(conn, uid), max_chars)
+        overview, part, attachments = _fetch_overview(conn, uid)
+        text, truncated = "", False
+        if part is not None:
+            # Enough encoded bytes for max_chars characters: up to 4 bytes of
+            # UTF-8 each, times 4/3 for base64. HTML gets more, since tags go.
+            budget = max_chars * (12 if part["content_type"] == "text/html" else 6)
+            complete = part["size"] <= budget
+            section = f"BODY.PEEK[{part['section']}]" + ("" if complete else f"<0.{budget}>")
+            text = decode_part(_fetch_raw(conn, uid, section), part, complete)
+            if part["content_type"] == "text/html":
+                text = html_to_text(text)
+            truncated = not complete or len(text) > max_chars
         if mark_read:
             conn.uid("STORE", uid, "+FLAGS", "(\\Seen)")
-        return {"uid": uid, "folder": folder, **result}
+    return {
+        "uid": uid, "folder": folder, **overview,
+        "body": text[:max_chars], "body_truncated": truncated, "attachments": attachments,
+    }
 
 
 # ── Sending ──────────────────────────────────────────────────────────────────
 
-def parse_recipients(values: list[str] | None, field: str) -> list[str]:
-    """Normalize recipient strings ("Name <a@b>", "a@b, c@d") to formatted addresses."""
-    out: list[str] = []
+def parse_recipients(values: list[str] | None, field: str) -> list[Address]:
+    """Parse recipient strings ("Name <a@b>", "a@b, c@d") into addresses.
+
+    Returns Address objects, not strings: the header and the SMTP envelope
+    are built from exactly these, never by parsing a joined string again. A
+    display name like "Boss, evil@example.org" would otherwise turn into a
+    recipient of its own and push out the real address.
+    """
+    out: list[Address] = []
     for value in values or []:
-        if re.search(r"[\r\n]", value):
-            raise MailRequestError(f"{field} must not contain line breaks.")
+        if re.search(r"[\x00-\x1f\x7f]", value):
+            raise MailRequestError(f"{field} must not contain line breaks or control characters.")
         for name, addr in getaddresses([value]):
             if not addr or "@" not in addr or addr.startswith("@") or addr.endswith("@"):
                 raise MailRequestError(f"Invalid address in {field}: {value!r}.")
-            out.append(f"{name} <{addr}>" if name else addr)
+            try:
+                out.append(Address(display_name=name, addr_spec=addr))
+            except (ValueError, IndexError, MessageError):
+                raise MailRequestError(f"Invalid address in {field}: {value!r}.") from None
     return out
 
 
+_MSGID_RE = re.compile(r"<[^<>\s]+>")
+
+
 def _reply_headers(conn: imaplib.IMAP4, uid: str) -> dict:
+    """Threading headers of the message being answered.
+
+    They come from someone else's mail, so only well-formed <message-ids>
+    are taken over; encoded line breaks (=?utf-8?q?=0D=0A?=) would otherwise
+    decode into header values Python refuses to set, failing the reply.
+    """
     raw = _fetch_raw(conn, uid, "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES SUBJECT)]")
     headers = message_from_bytes(raw, policy=policy.default)
-    message_id = str(headers.get("Message-ID", "")).strip()
-    references = " ".join(filter(None, [str(headers.get("References", "")).strip(), message_id]))
-    return {"message_id": message_id, "references": references, "subject": str(headers.get("Subject", ""))}
+    ids = _MSGID_RE.findall(str(headers.get("Message-ID", "")))
+    message_id = ids[0] if len(ids) == 1 else ""
+    references = _MSGID_RE.findall(str(headers.get("References", ""))) + ([message_id] if message_id else [])
+    subject = re.sub(r"[\x00-\x1f\x7f]+", " ", str(headers.get("Subject", ""))).strip()
+    return {"message_id": message_id, "references": " ".join(references), "subject": subject}
 
 
 def send_message(
@@ -551,11 +781,11 @@ def send_message(
     msg = EmailMessage()
     # The sender is always the authenticated user (D10): never a tool argument.
     msg["From"] = username
-    msg["To"] = ", ".join(to_addrs)
+    msg["To"] = to_addrs
     if cc_addrs:
-        msg["Cc"] = ", ".join(cc_addrs)
+        msg["Cc"] = cc_addrs
     if bcc_addrs:
-        msg["Bcc"] = ", ".join(bcc_addrs)  # kept for the Sent copy; never transmitted
+        msg["Bcc"] = bcc_addrs  # kept for the Sent copy; never transmitted
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=username.rsplit("@", 1)[-1] if "@" in username else None)
 
@@ -580,7 +810,10 @@ def send_message(
     with smtp_session(settings, username, token) as smtp:
         try:
             # send_message() never transmits Bcc headers, but does deliver to them.
-            refused = smtp.send_message(msg, from_addr=username)
+            refused = smtp.send_message(
+                msg, from_addr=username,
+                to_addrs=[a.addr_spec for a in to_addrs + cc_addrs + bcc_addrs],
+            )
         except smtplib.SMTPRecipientsRefused as exc:
             raise MailRequestError(f"All recipients were refused: {exc.recipients}") from None
         except smtplib.SMTPSenderRefused as exc:
