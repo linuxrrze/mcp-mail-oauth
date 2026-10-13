@@ -139,7 +139,9 @@ Dovecot*, then performs a real IMAP login. Every line must say `[ok]`, and a
    `OAUTH_SCOPES=openid email profile offline_access`, and make sure
    `WEBUI_SECRET_KEY` is set to a fixed value. Restart Open WebUI.
 2. *Admin Panel → Settings → External Tools → Add*: type **MCP (Streamable
-   HTTP)**, URL `http://mcp-mail:8000/mcp`, auth **OAuth**.
+   HTTP)**, URL `http://mcp-mail:8000/mcp`, auth **OAuth**. Through a reverse
+   proxy instead: `BASE_URL` + `/mcp`, e.g. `https://ai.example.com/mcp/mail-oauth/mcp`.
+   The container prints these values at startup (`docker logs mcp-mail 2>&1 | grep -A6 "MCP client settings"`).
 3. Users log out and in once, so their tokens carry the new scopes and the
    offline refresh token.
 

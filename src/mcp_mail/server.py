@@ -55,6 +55,28 @@ class EndpointPaths:
         await self.app(scope, receive, send)
 
 
+def client_settings(settings: Settings) -> list[str]:
+    """What to enter in an MCP client for this configuration, logged at startup."""
+    endpoint = settings.base_url.rstrip("/") + MCP_PATH
+    lines = [
+        "MCP client settings (Open WebUI: Admin Panel > Settings > External Tools > +):",
+        "  Type: MCP (Streamable HTTP)",
+        f"  URL:  {endpoint}",
+        f"        (BASE_URL + {MCP_PATH}; Open WebUI on the same Docker network may use"
+        f" http://<this container>:{settings.port}{MCP_PATH} instead)",
+        "  Auth: OAuth  (forwards the user's own Keycloak token; not 'OAuth 2.1', 'Bearer' or 'Session')",
+        f"  Tokens must come from {settings.oidc_issuer}, with {settings.mcp_audience!r} in aud"
+        f" and the scopes {', '.join(TOOL_SCOPES)} (Keycloak: Default client scopes)",
+    ]
+    if settings.auth_mode == "proxy":
+        lines += [
+            "  AUTH_MODE=proxy: other MCP clients (or Open WebUI with Auth: OAuth 2.1) can sign in through",
+            f"  this server; Keycloak client {settings.oidc_client_id!r} needs the redirect URI"
+            f" {settings.base_url.rstrip('/')}/auth/callback",
+        ]
+    return lines
+
+
 def http_middleware(settings: Settings) -> list[Middleware]:
     """ASGI middleware for the HTTP app (`run()` and `http_app()` alike)."""
     return [Middleware(EndpointPaths, endpoint=settings.base_url.rstrip("/") + MCP_PATH)]

@@ -26,8 +26,25 @@ depending on version):
 | Field | Value |
 |---|---|
 | Type | MCP (Streamable HTTP) |
-| URL | `https://mcp-mail.example.com/mcp` (as reachable **from the Open WebUI server**) |
+| URL | **`BASE_URL` + `/mcp`**, as reachable from the Open WebUI server, e.g. `https://mcp-mail.example.com/mcp`, or `https://ai.example.com/mcp/mail-oauth/mcp` behind a reverse proxy sub-directory |
 | Auth | **OAuth**: forwards the user's SSO access token |
+
+The container logs the exact values at startup:
+
+```
+INFO mcp_mail.__main__: MCP client settings (Open WebUI: Admin Panel > Settings > External Tools > +):
+INFO mcp_mail.__main__:   Type: MCP (Streamable HTTP)
+INFO mcp_mail.__main__:   URL:  https://ai.example.com/mcp/mail-oauth/mcp
+INFO mcp_mail.__main__:   Auth: OAuth  (forwards the user's own Keycloak token; not 'OAuth 2.1', 'Bearer' or 'Session')
+...
+```
+
+(`docker logs mcp-mail 2>&1 | grep -A6 "MCP client settings"`)
+
+**The URL must end in `/mcp`**, the endpoint path. The server's base URL or
+a reverse-proxy prefix alone isn't the endpoint: the server answers it with
+a 404 naming the right URL (log: `"POST / HTTP/1.1" 404`). A trailing slash
+(`.../mcp/`) is accepted.
 
 Don't pick "OAuth 2.1": that runs a separate per-user authorization against
 this server, which only works in `AUTH_MODE=proxy` and costs each user a

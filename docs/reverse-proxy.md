@@ -10,7 +10,8 @@ BASE_URL=https://ai.example.com/mcp/mail-oauth
 ```
 
 The MCP endpoint is then **`https://ai.example.com/mcp/mail-oauth/mcp`**:
-the server's own `/mcp` path sits under your prefix.
+the server's own `/mcp` path sits under your prefix. This is the URL to enter
+in Open WebUI, and the container logs it at startup (*MCP client settings*).
 
 Examples for Traefik v3:
 - Docker labels: [`deploy/traefik/docker-compose.traefik.yml`](../deploy/traefik/docker-compose.traefik.yml)

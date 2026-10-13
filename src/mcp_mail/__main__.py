@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from . import __version__
 from .config import ConfigError, load
-from .server import MCP_PATH, create_server, http_middleware
+from .server import MCP_PATH, client_settings, create_server, http_middleware
 
 
 def main() -> None:
@@ -30,11 +30,14 @@ def main() -> None:
         print(f"Configuration error: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    logging.getLogger(__name__).info(
+    log = logging.getLogger(__name__)
+    log.info(
         "Starting mcp-mail-oauth %s in AUTH_MODE=%s, issuer=%s, audience=%s, IMAP %s:%s, SMTP %s:%s",
         __version__, settings.auth_mode, settings.oidc_issuer, settings.mcp_audience,
         settings.mail.imap_host, settings.mail.imap_port, settings.mail.smtp_host, settings.mail.smtp_port,
     )
+    for line in client_settings(settings):
+        log.info("%s", line)
     # Stateless HTTP (D12): no MCP session state in this process, so restarts
     # and multiple replicas behind a load balancer need no session affinity.
     # No banner: besides log noise, showing it makes FastMCP query pypi.org
