@@ -88,15 +88,19 @@ jobs:
   # The real chain against the deploy/ files: Keycloak tokens, MCP server,
   # Dovecot oauth2 introspection (2.3 and 2.4), Postfix SASL, LMTP delivery.
   integration:
-    name: Integration (Dovecot ${{ matrix.dovecot }})
+    name: Integration (Dovecot ${{ matrix.dovecot }}, token exchange ${{ matrix.exchange }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         # 2.3 = 2.3.21.1. Dovecot 2.3.19 is known not to work (docs/mail-server.md).
-        dovecot: ["2.3", "2.4"]
+        include:
+          - { dovecot: "2.3", exchange: "off" }
+          - { dovecot: "2.4", exchange: "off" }
+          - { dovecot: "2.4", exchange: "on" }
     env:
       DOVECOT: ${{ matrix.dovecot }}
+      MAIL_TOKEN_EXCHANGE: ${{ matrix.exchange }}
       COMPOSE: docker compose -f test-stack/docker-compose.yml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,7 +111,7 @@ jobs:
         run: $COMPOSE run --rm e2e
       - name: Logs
         if: always()
-        run: $COMPOSE logs --no-color --tail 200 keycloak mail mcp-mail
+        run: $COMPOSE logs --no-color --tail 200 keycloak-setup keycloak mail mcp-mail
       - name: Tear down
         if: always()
         run: $COMPOSE down -v

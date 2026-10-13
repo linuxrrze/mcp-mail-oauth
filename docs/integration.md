@@ -6,6 +6,16 @@ This is the end-to-end walkthrough. The per-component pages
 order, with a check after each step, so a problem shows up where it was
 introduced instead of as a vague failure in the chat.
 
+**First pick the mail credential** ([mail-credential.md](mail-credential.md)):
+
+- **Forwarded token** (default): the token Open WebUI sends also logs in to
+  the mail server. 2 Keycloak clients.
+- **Token exchange**: the server exchanges it for a separate mail-server
+  token. 3 Keycloak clients, Keycloak 26.2+, conforms to the MCP spec.
+
+Only **step 1** (Keycloak) and **step 3** (container settings) differ. Each
+gives both variants under their own heading; follow just one.
+
 ## What you need already
 
 - **Keycloak** with a realm your Open WebUI users log in through (OIDC).
@@ -20,7 +30,8 @@ introduced instead of as a vague failure in the chat.
 
 | Component | Change | Effect on existing users |
 |---|---|---|
-| Keycloak | 3 client scopes, 1 new client (`dovecot`), scopes added to Open WebUI's client | Open WebUI tokens gain two `aud` entries and three scopes. Nothing else changes. Users must log in again to get them |
+| Keycloak, forwarded token | 3 client scopes, 1 new client (`dovecot`), 3 scopes added to Open WebUI's client | Open WebUI tokens gain two `aud` entries (`mcp-mail`, `dovecot`) and three scopes. Users must log in again to get them |
+| Keycloak, token exchange | 3 client scopes, 2 new clients (`dovecot`, `mcp-mail`), 2 scopes added to Open WebUI's client | Open WebUI tokens gain one `aud` entry (`mcp-mail`) and two scopes. Users must log in again to get them |
 | Dovecot | one extra passdb, limited to `xoauth2`/`oauthbearer` | none: password logins keep using your existing passdb |
 | Postfix | usually nothing; optionally sender-login enforcement | Postfix starts advertising XOAUTH2/OAUTHBEARER (it offers what Dovecot offers) |
 | Open WebUI | `offline_access` in `OAUTH_SCOPES`, one MCP tool server | needs a restart; users log in again once |
@@ -33,6 +44,7 @@ Open WebUI ──HTTP──▶ mcp-mail:8000/mcp            (Docker network, no 
 mcp-mail ───HTTPS──▶ Keycloak JWKS                (signature keys; once at startup + on key rotation)
 mcp-mail ───TLS────▶ Dovecot :993, Postfix :587   (hostname must match the certificate)
 Dovecot ────HTTPS──▶ Keycloak introspection       (on every IMAP/SMTP login)
+mcp-mail ───HTTPS──▶ Keycloak token endpoint      (token exchange only: once per new user token)
 ```
 
 Two pitfalls decide most first-time failures:
@@ -61,16 +73,41 @@ include the sub-directory.
 
 ```bash
 kcadm.sh config credentials --server https://sso.example.com --realm master --user admin
+```
+
+Details, a click-through version and the reasons: [keycloak.md](keycloak.md).
+
+### 1a. Forwarded token (default)
+
+```bash
 REALM=<your realm> OPENWEBUI_CLIENT=<Open WebUI's client id> deploy/keycloak/setup-kcadm.sh
 ```
 
-Note the printed `dovecot` client secret. Details and a click-through
-version: [keycloak.md](keycloak.md).
+Note the printed `dovecot` client secret.
 
 **Check:** *Clients → (Open WebUI client) → Client scopes → Evaluate*, pick a
-real user, open *Generated access token*: `aud` contains `mcp-mail` and
-`dovecot`, `scope` contains `mail mcp:mail/read mcp:mail/send`, and `email`
-is set. Save that token in a file (`token.txt`) for the checks below. It is
+real user, open *Generated access token*:
+- `aud` contains `mcp-mail` **and** `dovecot`.
+- `scope` contains `mail mcp:mail/read mcp:mail/send`.
+- `email` is set.
+
+### 1b. Token exchange
+
+```bash
+REALM=<your realm> OPENWEBUI_CLIENT=<Open WebUI's client id> deploy/keycloak/setup-kcadm.sh --exchange
+```
+
+Note both printed secrets: `mcp-mail` (for the container, step 3b) and
+`dovecot` (for Dovecot, step 2).
+
+**Check:** the same *Evaluate* view:
+- `aud` contains `mcp-mail` but **not** `dovecot`.
+- `scope` contains `mcp:mail/read mcp:mail/send` but **not** `mail`.
+- `email` is set.
+
+### Both
+
+Save the generated token in a file (`token.txt`) for the checks below. It is
 valid for 5 minutes, so generate a new one if a later check reports
 "expired".
 
@@ -97,7 +134,7 @@ curl -LO <repo>/deploy/docker-compose.existing-stack.yml   # or copy it from a c
 curl -L <repo>/.env.example -o .env
 ```
 
-Edit `.env`:
+### 3a. Both variants: edit `.env`
 
 | Variable | Value |
 |---|---|
@@ -108,17 +145,30 @@ Edit `.env`:
 | `MAIL_IMAP_SECURITY` / `MAIL_SMTP_SECURITY` | as your server offers them (defaults: 993 TLS, 587 STARTTLS) |
 | `MAIL_SENT_FOLDER` | your Sent folder's name (e.g. `Sent`, `Gesendet`), or empty if sieve already files sent mail |
 
+### 3b. Token exchange only: also set
+
+| Variable | Value |
+|---|---|
+| `MAIL_TOKEN_EXCHANGE` | `on` (the default `off` is the forwarded token) |
+| `OIDC_CLIENT_ID` | `mcp-mail`, equal to `MCP_AUDIENCE` |
+| `OIDC_CLIENT_SECRET` | the `mcp-mail` secret from step 1b |
+| `OIDC_TOKEN_ENDPOINT` | only if the public issuer isn't reachable from the container, like `OIDC_JWKS_URI` |
+
+### 3c. Both variants: start
+
 Set the image and Open WebUI's network, then start:
 
 ```bash
-export MCP_MAIL_IMAGE=ghcr.io/linuxrrze/mcp-mail-oauth:0.2   # the default; override for another registry
+export MCP_MAIL_IMAGE=ghcr.io/linuxrrze/mcp-mail-oauth:0.4   # the default; override for another registry
 export OPENWEBUI_NETWORK=$(docker inspect open-webui -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')
 docker compose -f docker-compose.existing-stack.yml up -d
 docker compose -f docker-compose.existing-stack.yml logs mcp-mail | head
 ```
 
-The log shows `Starting mcp-mail-oauth <version> in AUTH_MODE=resource ...`.
-A `Configuration error: ...` line names the variable to fix.
+The log shows `Starting mcp-mail-oauth <version> in AUTH_MODE=resource,
+mail credential=forwarded token ...` (or `token exchange`): **check that it
+names the variant you chose**. A `Configuration error: ...` line names the
+variable to fix.
 
 **Check, end to end except Open WebUI:**
 ```bash
@@ -130,10 +180,12 @@ docker compose -f docker-compose.existing-stack.yml exec -T \
 (The token arrives on stdin, so there's no terminal for an interactive
 secret prompt; hence the variable.)
 The command checks the token as this server would, then asks Keycloak *as
-Dovecot*, then performs a real IMAP login. Every line must say `[ok]`, and a
+Dovecot*, then performs a real IMAP login. With token exchange it performs
+the exchange in between and uses the exchanged token, exactly as the server
+does, so the same command works for both. Every line must say `[ok]`, and a
 `[FAIL]` line names the fix. Troubleshooting: [troubleshooting.md](troubleshooting.md).
 
-## Step 4: Open WebUI
+## Step 4: Open WebUI (both variants)
 
 1. Add to Open WebUI's environment (see `deploy/open-webui/openwebui.env.example`):
    `OAUTH_SCOPES=openid email profile offline_access`, and make sure
@@ -148,7 +200,8 @@ Dovecot*, then performs a real IMAP login. Every line must say `[ok]`, and a
 Why these settings: [open-webui.md](open-webui.md).
 
 **Check:** in a chat with the tool enabled:
-1. *"Run whoami"*: your address as `mailbox`, `missing_scopes` empty.
+1. *"Run whoami"*: your address as `mailbox`, `missing_scopes` empty,
+   `mail_credential` names your variant.
 2. *"List my five newest emails"*: matches your inbox.
 3. *"Send a test mail to myself with subject 'mcp test'"*: arrives, and a
    copy is in the Sent folder.
@@ -171,5 +224,8 @@ In reverse order, each step independent:
 2. `docker compose down` the container.
 3. Remove the oauth2 `!include` from Dovecot and reload. Password logins were
    never affected.
-4. In Keycloak, remove the three scopes from Open WebUI's client, then delete
-   the `dovecot` client and the scopes.
+4. In Keycloak, remove the mail scopes from Open WebUI's client, then delete
+   the `dovecot` client (with token exchange also `mcp-mail`) and the scopes.
+
+Switching between the two variants instead of removing everything:
+[mail-credential.md](mail-credential.md#switching).

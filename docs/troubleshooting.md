@@ -2,6 +2,17 @@
 
 Work down the chain; each step can only fail if the previous ones pass.
 
+**First, which mail credential is running?** The startup log says
+`mail credential=forwarded token` or `mail credential=token exchange`, and
+`whoami` reports `mail_credential`. It must match how Keycloak was set up
+(`setup-kcadm.sh` vs. `setup-kcadm.sh --exchange`,
+[mail-credential.md](mail-credential.md)). A mismatch shows up like this:
+
+| Server | Keycloak | Symptom |
+|---|---|---|
+| forwarded token | set up for exchange | Dovecot rejects every login: Open WebUI's token lacks `dovecot` in `aud` and the `mail` scope |
+| token exchange | set up for forwarded token | *Keycloak refused to exchange ...*: `mcp-mail` has no token exchange, or doesn't exist |
+
 ## `mcp-mail-diagnose`
 
 Checks one token against every rule. Get a token for a test user from
@@ -35,6 +46,7 @@ It never prints the token, and exits non-zero if any check fails.
 | *TLS certificate ... could not be verified* | Private CA | `MAIL_CA_FILE` |
 | Startup fails with a certificate error on OIDC discovery | Keycloak certificate from a private CA | `SSL_CERT_FILE` with a bundle that includes it (D21) |
 | Open WebUI can't connect; server log shows `"POST / HTTP/1.1" 404` | The configured URL lacks the endpoint path | End the URL with `/mcp`, e.g. `https://ai.example.com/mcp/mail-oauth/mcp` (reverse-proxy.md) |
+| *Keycloak refused to exchange your token for a mail token* | `MAIL_TOKEN_EXCHANGE=on` but Keycloak isn't set up for it: no token exchange on `mcp-mail`, or the token lacks `mcp-mail` in `aud` | `setup-kcadm.sh --exchange`; users log in again (keycloak.md, Token exchange) |
 | *refused sender* on send | Postfix's sender-login map doesn't map the address to the login | Map each address to itself (deploy/postfix/main.cf.snippet) |
 
 ## Dovecot rejects the token

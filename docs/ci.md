@@ -11,7 +11,7 @@ flowchart LR
         direction TB
         test["Tests<br/>Python 3.11 / 3.12 / 3.13"]
         repo["Trivy repository scan<br/>secrets, misconfig"]
-        integration["Integration stack<br/>Keycloak + Postfix/Dovecot 2.3 / 2.4"]
+        integration["Integration stack<br/>Keycloak + Postfix/Dovecot 2.3 / 2.4,<br/>with and without token exchange"]
         version["Next version<br/>from tags + commits"]
     end
 
@@ -28,7 +28,8 @@ flowchart LR
 
 **An image is published only if all of these pass:** the full test suite on
 three Python versions, Trivy's repository scan, the end-to-end checks against
-the test stack with Dovecot 2.3 and 2.4 ([test-stack/README.md](../test-stack/README.md)),
+the test stack with Dovecot 2.3 and 2.4 and with token exchange
+([test-stack/README.md](../test-stack/README.md)),
 Trivy's image scan, and a smoke test of the built container. The pushed image is byte-for-byte the one that
 was scanned and smoke-tested: it is built once, loaded locally, then pushed,
 never rebuilt (decisions.md D20).

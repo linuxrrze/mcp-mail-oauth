@@ -3,6 +3,11 @@
 Dovecot validates the token. Postfix delegates SMTP AUTH to Dovecot, so it
 needs no OAuth configuration of its own. Files are in `deploy/`.
 
+Everything on this page is the same for both mail credentials (forwarded
+token and token exchange, [mail-credential.md](mail-credential.md)).
+Dovecot checks whatever token it gets by introspection as the `dovecot`
+client. Which token that is only changes in Keycloak and in this server.
+
 ## Versions
 
 | Dovecot | Status |

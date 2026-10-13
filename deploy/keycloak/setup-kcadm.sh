@@ -5,13 +5,18 @@
 # Creates/ensures:
 #   - client scopes  mail (with 2 audience mappers), mcp:mail/read, mcp:mail/send
 #   - client         dovecot   (introspection credentials only, no login flow)
-#   - client         mcp-mail  (only with --proxy, for AUTH_MODE=proxy)
+#   - client         mcp-mail  (only with --proxy, for AUTH_MODE=proxy, and/or
+#                               --exchange, for MAIL_TOKEN_EXCHANGE=on)
 #   - assigns the 3 scopes as DEFAULT client scopes on the Open WebUI client
 #     (and on mcp-mail with --proxy)
+#   With --exchange instead (docs/keycloak.md, "Token exchange"): Open WebUI's
+#   client gets only the two mcp:mail/* scopes, which then carry the MCP
+#   audience, and LOSES the mail scope; mcp-mail gets standard token exchange
+#   and the mail scope. Open WebUI's tokens then no longer work at Dovecot.
 #
 # Usage:
 #   kcadm.sh config credentials --server https://sso.example.com --realm master --user admin
-#   REALM=mail OPENWEBUI_CLIENT=openwebui ./setup-kcadm.sh [--proxy https://mcp-mail.example.com]
+#   REALM=mail OPENWEBUI_CLIENT=openwebui ./setup-kcadm.sh [--proxy https://mcp-mail.example.com] [--exchange]
 #
 # See docs/keycloak.md for what each piece is for.
 set -euo pipefail
@@ -23,8 +28,18 @@ DOVECOT_CLIENT=${DOVECOT_CLIENT:-dovecot}
 MCP_AUDIENCE=${MCP_AUDIENCE:-mcp-mail}
 PROXY_CLIENT=${PROXY_CLIENT:-mcp-mail}
 PROXY_BASE_URL=""
-if [[ "${1:-}" == "--proxy" ]]; then
-  PROXY_BASE_URL=${2:?--proxy needs the server BASE_URL}
+EXCHANGE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --proxy) PROXY_BASE_URL=${2:?--proxy needs the server BASE_URL}; shift 2 ;;
+    --exchange) EXCHANGE=1; shift ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+if [[ -n "$EXCHANGE" && "$PROXY_CLIENT" != "$MCP_AUDIENCE" ]]; then
+  # Keycloak only exchanges tokens whose aud names the exchanging client.
+  echo "--exchange needs PROXY_CLIENT ($PROXY_CLIENT) = MCP_AUDIENCE ($MCP_AUDIENCE)" >&2
+  exit 2
 fi
 
 kc() { "$KCADM" "$@" -r "$REALM"; }
@@ -96,10 +111,24 @@ if [[ -z "$openwebui" ]]; then
   echo "Client $OPENWEBUI_CLIENT not found in realm $REALM - create Open WebUI's client first." >&2
   exit 1
 fi
-assign_default_scopes "$openwebui" "$mail" "$read" "$send"
-echo "assigned mail scopes as default on $OPENWEBUI_CLIENT" >&2
+if [[ -z "$EXCHANGE" ]]; then
+  assign_default_scopes "$openwebui" "$mail" "$read" "$send"
+  echo "assigned mail scopes as default on $OPENWEBUI_CLIENT" >&2
+else
+  # The tool scopes carry the MCP audience; the mail scope (Dovecot's
+  # audience) is only for tokens the server obtains by exchange.
+  ensure_audience_mapper "$read" "audience-$MCP_AUDIENCE" included.custom.audience "$MCP_AUDIENCE"
+  ensure_audience_mapper "$send" "audience-$MCP_AUDIENCE" included.custom.audience "$MCP_AUDIENCE"
+  assign_default_scopes "$openwebui" "$read" "$send"
+  if kc get "clients/$openwebui/default-client-scopes" --fields id --format csv --noquotes | grep -qx "$mail"; then
+    kc delete "clients/$openwebui/default-client-scopes/$mail"
+    echo "removed the mail scope from $OPENWEBUI_CLIENT (token exchange)" >&2
+  fi
+  echo "assigned mcp:mail/* (not mail) as default on $OPENWEBUI_CLIENT" >&2
+fi
 
-# 4. Optional: the OIDCProxy client for AUTH_MODE=proxy.
+# 4. Optional: the server's own client, for token exchange and/or AUTH_MODE=proxy.
+# (--proxy first: it creates the client with the login flow; --exchange only adds to it.)
 if [[ -n "$PROXY_BASE_URL" ]]; then
   proxy=$(client_uuid "$PROXY_CLIENT")
   if [[ -z "$proxy" ]]; then
@@ -110,6 +139,25 @@ if [[ -n "$PROXY_BASE_URL" ]]; then
     echo "created client $PROXY_CLIENT" >&2
   fi
   assign_default_scopes "$proxy" "$mail" "$read" "$send"
+fi
+
+if [[ -n "$EXCHANGE" ]]; then
+  proxy=$(client_uuid "$PROXY_CLIENT")
+  if [[ -z "$proxy" ]]; then
+    proxy=$(kc create clients -i -s "clientId=$PROXY_CLIENT" -s publicClient=false \
+      -s standardFlowEnabled=false -s implicitFlowEnabled=false \
+      -s directAccessGrantsEnabled=false -s serviceAccountsEnabled=false)
+    echo "created client $PROXY_CLIENT" >&2
+  fi
+  # Whitespace-insensitive: kcadm pretty-prints the client's JSON.
+  if ! kc get "clients/$proxy" | tr -d ' \n\t' | grep -q '"standard.token.exchange.enabled":"true"'; then
+    kc update "clients/$proxy" -s 'attributes."standard.token.exchange.enabled"=true'
+    echo "enabled standard token exchange on $PROXY_CLIENT" >&2
+  fi
+  # Exchanged tokens get the mail scope: Dovecot's audience and scope = mail.
+  assign_default_scopes "$proxy" "$mail"
+fi
+if [[ -n "$PROXY_BASE_URL$EXCHANGE" ]]; then
   echo "OIDC_CLIENT_SECRET for $PROXY_CLIENT:" >&2
   kc get "clients/$proxy/client-secret" --fields value --format csv --noquotes
 fi

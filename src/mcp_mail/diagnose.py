@@ -5,9 +5,11 @@ Keycloak access token reports:
 
 1. its claims (decoded locally, signature NOT checked - display only),
 2. whether this MCP server would accept it (issuer, audience, scopes, claim),
-3. optionally, what Keycloak's introspection endpoint says when asked by the
+3. with MAIL_TOKEN_EXCHANGE=on, the token exchange and the mail token it
+   yields (steps 4 and 5 then use that mail token, as the server would),
+4. optionally, what Keycloak's introspection endpoint says when asked by the
    client Dovecot uses (--introspect-client-id), which is exactly Dovecot's view,
-4. optionally (--imap), a real IMAP login with it.
+5. optionally (--imap), a real IMAP login with it.
 
 The token is read from a file or stdin, never from argv (shell history,
 `ps`), and is never printed. An easy way to get one for a test user: Keycloak
@@ -18,6 +20,7 @@ user -> "Generated access token".
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import getpass
 import json
@@ -29,8 +32,9 @@ import httpx2
 from dotenv import load_dotenv
 
 from . import mail
-from .auth import TOOL_SCOPES
+from .auth import TOOL_SCOPES, build_exchanger
 from .config import ConfigError, load
+from .exchange import TokenExchangeError
 
 OK, FAIL, INFO = "  [ok]  ", "  [FAIL]", "  [info]"
 
@@ -82,10 +86,27 @@ def check_claims(claims: dict, *, issuer: str, audience: str, username_claim: st
     return failures
 
 
-def introspect(issuer: str, token: str, client_id: str, client_secret: str) -> dict:
-    discovery = httpx2.get(f"{issuer}/.well-known/openid-configuration", timeout=10).json()
+KEYCLOAK_OIDC_PATH = "/protocol/openid-connect/"
+
+
+def introspection_endpoint(settings) -> str:
+    """Keycloak's introspection URL, reached the way the server reaches Keycloak.
+
+    If an internal URL is configured (OIDC_JWKS_URI or OIDC_TOKEN_ENDPOINT,
+    for containers that can't reach the public issuer), derive it from that,
+    since all Keycloak endpoints share .../protocol/openid-connect/. Otherwise
+    read it from the issuer's discovery document.
+    """
+    for url in (settings.oidc_jwks_uri, settings.oidc_token_endpoint):
+        if url and KEYCLOAK_OIDC_PATH in url:
+            return url.split(KEYCLOAK_OIDC_PATH)[0] + KEYCLOAK_OIDC_PATH + "token/introspect"
+    discovery = httpx2.get(f"{settings.oidc_issuer}/.well-known/openid-configuration", timeout=10).json()
+    return discovery["introspection_endpoint"]
+
+
+def introspect(endpoint: str, token: str, client_id: str, client_secret: str) -> dict:
     resp = httpx2.post(
-        discovery["introspection_endpoint"], data={"token": token},
+        endpoint, data={"token": token},
         auth=(client_id, client_secret), timeout=10,
     )
     resp.raise_for_status()
@@ -135,12 +156,29 @@ def main(argv: list[str] | None = None) -> int:
     print("\nThis MCP server's checks:")
     failures = check_claims(
         claims, issuer=settings.oidc_issuer, audience=settings.mcp_audience,
-        username_claim=settings.mail.username_claim, introspect_client=args.introspect_client_id,
+        username_claim=settings.mail.username_claim,
+        # With exchange, the incoming token is deliberately not a mail credential.
+        introspect_client=None if settings.token_exchange else args.introspect_client_id,
     )
     for failure in failures:
         print(f"{FAIL} {failure}")
     if not failures:
         print(f"{OK} issuer, audience, scopes and {settings.mail.username_claim!r} claim all fine")
+
+    mail_credential = token
+    if settings.token_exchange:
+        print(f"\nToken exchange (MAIL_TOKEN_EXCHANGE=on, client {settings.oidc_client_id!r}):")
+        try:
+            mail_credential = asyncio.run(build_exchanger(settings).mail_token(token))
+        except (TokenExchangeError, ConfigError) as exc:
+            print(f"{FAIL} {exc}")
+            return 1
+        mail_claims = decode_claims(mail_credential)
+        print(f"{OK} mail token: aud={mail_claims.get('aud')!r}, scope={mail_claims.get('scope')!r}, "
+              f"{settings.mail.username_claim}={mail_claims.get(settings.mail.username_claim)!r}")
+        if args.introspect_client_id and args.introspect_client_id not in _aud_list(mail_claims):
+            print(f"{FAIL} the mail token's aud lacks {args.introspect_client_id!r}")
+            failures.append("exchange")
 
     if args.introspect_client_id:
         print(f"\nKeycloak introspection as {args.introspect_client_id!r} (what Dovecot sees):")
@@ -151,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             secret = getpass.getpass("Client secret: ")
         try:
-            result = introspect(settings.oidc_issuer, token, args.introspect_client_id, secret)
+            result = introspect(introspection_endpoint(settings), mail_credential, args.introspect_client_id, secret)
         except httpx2.HTTPError as exc:
             print(f"{FAIL} introspection request failed: {exc}")
             failures.append("introspection")
@@ -168,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nIMAP login at {settings.mail.imap_host}:{settings.mail.imap_port} ({settings.mail.sasl_mechanism}):")
         username = claims.get(settings.mail.username_claim, "")
         try:
-            folders = mail.list_folders(settings.mail, username, token)
+            folders = mail.list_folders(settings.mail, username, mail_credential)
         except mail.MailError as exc:
             print(f"{FAIL} {exc}")
             failures.append("imap")

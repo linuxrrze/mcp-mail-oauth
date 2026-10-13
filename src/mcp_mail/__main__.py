@@ -32,8 +32,10 @@ def main() -> None:
 
     log = logging.getLogger(__name__)
     log.info(
-        "Starting mcp-mail-oauth %s in AUTH_MODE=%s, issuer=%s, audience=%s, IMAP %s:%s, SMTP %s:%s",
-        __version__, settings.auth_mode, settings.oidc_issuer, settings.mcp_audience,
+        "Starting mcp-mail-oauth %s in AUTH_MODE=%s, mail credential=%s, issuer=%s, audience=%s, "
+        "IMAP %s:%s, SMTP %s:%s",
+        __version__, settings.auth_mode, "token exchange" if settings.token_exchange else "forwarded token",
+        settings.oidc_issuer, settings.mcp_audience,
         settings.mail.imap_host, settings.mail.imap_port, settings.mail.smtp_host, settings.mail.smtp_port,
     )
     for line in client_settings(settings):

@@ -1,5 +1,9 @@
 # Open WebUI
 
+Everything on this page is the same for both mail credentials (forwarded
+token and token exchange, [mail-credential.md](mail-credential.md)): Open
+WebUI always forwards the user's token to this server.
+
 ## 1. SSO with Keycloak
 
 Merge `deploy/open-webui/openwebui.env.example` into Open WebUI's

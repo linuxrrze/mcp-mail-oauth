@@ -7,6 +7,7 @@
 #   docker compose -f test-stack/docker-compose.yml down -v
 #
 # DOVECOT selects the mail server: 2.3 (default, 2.3.21), 2.3.19 or 2.4.
+# MAIL_TOKEN_EXCHANGE=on switches to separate mail tokens (RFC 8693).
 # --profile webui adds Open WebUI on http://localhost:3000.
 
 name: mcp-mail-test
@@ -23,6 +24,12 @@ x-mcp-env: &mcp-env
   MAIL_SMTP_HOST: mail.example.com
   MAIL_CA_FILE: /certs/ca.crt
   LOG_LEVEL: INFO
+  # MAIL_TOKEN_EXCHANGE=on: separate mail tokens via RFC 8693 (decisions.md D23).
+  # The client exists in both modes (keycloak-setup creates it).
+  MAIL_TOKEN_EXCHANGE: ${MAIL_TOKEN_EXCHANGE:-off}
+  OIDC_CLIENT_ID: mcp-mail
+  OIDC_CLIENT_SECRET: mcp-mail-test-secret
+  OIDC_TOKEN_ENDPOINT: http://keycloak:8080/realms/mail/protocol/openid-connect/token
 
 services:
   # Throwaway CA + mail certificate, and the realm to import.
@@ -69,6 +76,8 @@ services:
         KEYCLOAK_VERSION: ${KEYCLOAK_VERSION:-26.8.1}
     image: mcp-mail-test-kcadm:${KEYCLOAK_VERSION:-26.8.1}
     command: ["bash", "/keycloak-setup.sh"]
+    environment:
+      MAIL_TOKEN_EXCHANGE: ${MAIL_TOKEN_EXCHANGE:-off}
     volumes:
       - ./init/keycloak-setup.sh:/keycloak-setup.sh:ro
       - ../deploy/keycloak/setup-kcadm.sh:/setup-kcadm.sh:ro

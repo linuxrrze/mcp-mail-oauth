@@ -8,7 +8,7 @@ every release (Dovecot 2.3 and 2.4).
 
 ```bash
 docker compose -f test-stack/docker-compose.yml up -d --build
-docker compose -f test-stack/docker-compose.yml run --rm e2e     # 22 checks
+docker compose -f test-stack/docker-compose.yml run --rm e2e     # 23 checks (26 with token exchange)
 docker compose -f test-stack/docker-compose.yml down -v          # removes everything
 ```
 
@@ -39,6 +39,22 @@ The imported realm is deliberately incomplete, a stand-in for an existing
 realm: Open WebUI's client and two users, nothing for mail. Everything
 mail-related is created by the setup script, the same way as in
 [docs/keycloak.md](../docs/keycloak.md) option A.
+
+## Token exchange
+
+```bash
+MAIL_TOKEN_EXCHANGE=on docker compose -f test-stack/docker-compose.yml up -d --build
+MAIL_TOKEN_EXCHANGE=on docker compose -f test-stack/docker-compose.yml run --rm e2e
+```
+
+Runs `setup-kcadm.sh --exchange` and the server with separate mail tokens
+([decisions.md](../docs/decisions.md) D23). The e2e run adds three checks:
+- Open WebUI's token is inactive for Dovecot and refused at IMAP.
+- The exchanged token is issued to `mcp-mail`, for `dovecot`, with scope
+  `mail`, for the same user.
+
+All other checks then use the exchanged token. Run `down -v` when switching
+modes.
 
 ## Dovecot version
 

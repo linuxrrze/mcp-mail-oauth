@@ -68,10 +68,14 @@ class Settings:
     oidc_jwks_uri: str | None
     mcp_audience: str
     base_url: str
-    # proxy mode only
+    # proxy mode and token exchange
     oidc_client_id: str | None
     oidc_client_secret: str | None
     jwt_signing_key: str | None
+    # MAIL_TOKEN_EXCHANGE=on (D23)
+    token_exchange: bool
+    oidc_token_endpoint: str | None
+    mail_token_audience: str
     mail: MailSettings
     host: str
     port: int
@@ -85,6 +89,19 @@ def load(env: dict[str, str] | None = None) -> Settings:
     oidc_client_secret = env.get("OIDC_CLIENT_SECRET", "").strip() or None
     if auth_mode == "proxy" and not (oidc_client_id and oidc_client_secret):
         raise ConfigError("AUTH_MODE=proxy requires OIDC_CLIENT_ID and OIDC_CLIENT_SECRET.")
+
+    mcp_audience = env.get("MCP_AUDIENCE", "").strip() or "mcp-mail"
+    token_exchange = _choice(env, "MAIL_TOKEN_EXCHANGE", "off", ("off", "on")) == "on"
+    if token_exchange:
+        if not (oidc_client_id and oidc_client_secret):
+            raise ConfigError("MAIL_TOKEN_EXCHANGE=on requires OIDC_CLIENT_ID and OIDC_CLIENT_SECRET "
+                              "(the Keycloak client that exchanges tokens).")
+        # Keycloak only exchanges a token that names the requesting client in
+        # `aud`; the token's audience is MCP_AUDIENCE.
+        if mcp_audience != oidc_client_id:
+            raise ConfigError(f"MAIL_TOKEN_EXCHANGE=on requires MCP_AUDIENCE ({mcp_audience!r}) to equal "
+                              f"OIDC_CLIENT_ID ({oidc_client_id!r}): Keycloak only exchanges tokens whose "
+                              "aud contains the exchanging client.")
 
     imap_security = _choice(env, "MAIL_IMAP_SECURITY", "tls", ("tls", "starttls"))
     smtp_security = _choice(env, "MAIL_SMTP_SECURITY", "starttls", ("tls", "starttls"))
@@ -109,11 +126,14 @@ def load(env: dict[str, str] | None = None) -> Settings:
         auth_mode=auth_mode,
         oidc_issuer=_require(env, "OIDC_ISSUER").rstrip("/"),
         oidc_jwks_uri=env.get("OIDC_JWKS_URI", "").strip() or None,
-        mcp_audience=env.get("MCP_AUDIENCE", "").strip() or "mcp-mail",
+        mcp_audience=mcp_audience,
         base_url=_require(env, "BASE_URL").rstrip("/"),
         oidc_client_id=oidc_client_id,
         oidc_client_secret=oidc_client_secret,
         jwt_signing_key=env.get("JWT_SIGNING_KEY", "").strip() or None,
+        token_exchange=token_exchange,
+        oidc_token_endpoint=env.get("OIDC_TOKEN_ENDPOINT", "").strip() or None,
+        mail_token_audience=env.get("MAIL_TOKEN_AUDIENCE", "").strip() or "dovecot",
         mail=mail,
         host=env.get("HOST", "").strip() or "0.0.0.0",
         port=_int(env, "PORT", 8000),
