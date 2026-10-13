@@ -13,8 +13,10 @@ from fastmcp.dependencies import CurrentAccessToken
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken, AuthProvider, require_scopes
 from pydantic import Field
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__, mail
 from .auth import READ_SCOPE, SEND_SCOPE, TOOL_SCOPES, build_auth
@@ -23,6 +25,39 @@ from .config import Settings
 logger = logging.getLogger(__name__)
 
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": True}
+
+MCP_PATH = "/mcp"
+
+
+class EndpointPaths:
+    """Forgive the two endpoint URLs people configure by mistake.
+
+    - `/mcp/` is served as `/mcp`. Starlette would otherwise redirect it to
+      `/mcp`, built from the internal Host and without a reverse proxy's
+      stripped prefix (e.g. http://mcp-mail:8000/mcp), which no client can
+      reach. Open WebUI then just reports a failed connection.
+    - `/` (the server's base URL, or a proxy prefix without `/mcp`) gets a 404
+      that names the actual endpoint instead of an empty one.
+    """
+
+    def __init__(self, app: ASGIApp, endpoint: str) -> None:
+        self.app = app
+        self.endpoint = endpoint
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            if scope["path"] == MCP_PATH + "/":
+                scope = {**scope, "path": MCP_PATH, "raw_path": MCP_PATH.encode()}
+            elif scope["path"] == "/":
+                response = PlainTextResponse(f"Not the MCP endpoint. Use {self.endpoint}\n", status_code=404)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def http_middleware(settings: Settings) -> list[Middleware]:
+    """ASGI middleware for the HTTP app (`run()` and `http_app()` alike)."""
+    return [Middleware(EndpointPaths, endpoint=settings.base_url.rstrip("/") + MCP_PATH)]
 
 
 def _identity(settings: Settings, token: AccessToken) -> tuple[str, str]:

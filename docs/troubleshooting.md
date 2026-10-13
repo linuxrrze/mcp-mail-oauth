@@ -34,6 +34,7 @@ It never prints the token, and exits non-zero if any check fails.
 | Works for a while, then stops until re-login | Open WebUI couldn't refresh the token (refresh token expired with the SSO idle timeout) | `offline_access` in `OAUTH_SCOPES`, stable `WEBUI_SECRET_KEY` (open-webui.md, D16) |
 | *TLS certificate ... could not be verified* | Private CA | `MAIL_CA_FILE` |
 | Startup fails with a certificate error on OIDC discovery | Keycloak certificate from a private CA | `SSL_CERT_FILE` with a bundle that includes it (D21) |
+| Open WebUI can't connect; server log shows `"POST / HTTP/1.1" 404` | The configured URL lacks the endpoint path | End the URL with `/mcp`, e.g. `https://ai.example.com/mcp/mail-oauth/mcp` (reverse-proxy.md) |
 | *refused sender* on send | Postfix's sender-login map doesn't map the address to the login | Map each address to itself (deploy/postfix/main.cf.snippet) |
 
 ## Dovecot rejects the token

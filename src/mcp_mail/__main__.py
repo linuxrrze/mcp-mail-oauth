@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from . import __version__
 from .config import ConfigError, load
-from .server import create_server
+from .server import MCP_PATH, create_server, http_middleware
 
 
 def main() -> None:
@@ -40,8 +40,8 @@ def main() -> None:
     # No banner: besides log noise, showing it makes FastMCP query pypi.org
     # for updates on every start, an outbound call a mail server has no need for.
     mcp.run(
-        transport="http", host=settings.host, port=settings.port, path="/mcp",
-        stateless_http=True, show_banner=False,
+        transport="http", host=settings.host, port=settings.port, path=MCP_PATH,
+        stateless_http=True, show_banner=False, middleware=http_middleware(settings),
     )
 
 

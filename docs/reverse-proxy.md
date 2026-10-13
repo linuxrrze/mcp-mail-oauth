@@ -45,10 +45,13 @@ pins them down so an upgrade that changes them fails CI.
 
 ## Things to get right
 
-- **No trailing slash** in `BASE_URL` or in the URL you configure in clients.
-  The app redirects `/mcp/` to `/mcp` using the *internal* host and without
-  the stripped prefix (e.g. `http://mcp-mail:8000/mcp`), a URL no client
-  can reach.
+- **The client URL ends in `/mcp`**: `https://ai.example.com/mcp/mail-oauth/mcp`.
+  `…/mcp/` works too: the server serves it directly instead of redirecting,
+  because the redirect would go to the internal host without the stripped
+  prefix (`http://mcp-mail:8000/mcp`). The prefix alone (`…/mcp/mail-oauth/`)
+  gets a 404 that names the right URL; in the server log it shows up as
+  `"POST / HTTP/1.1" 404`.
+- **No trailing slash in `BASE_URL`.**
 - **Match on `PathPrefix(`/mcp/mail-oauth/`)`**, with the trailing slash, so
   `/mcp/mail-oauth-other` can't match by accident. Strip `/mcp/mail-oauth`,
   without it.

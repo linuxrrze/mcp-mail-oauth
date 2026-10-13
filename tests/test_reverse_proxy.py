@@ -10,7 +10,7 @@ import pytest
 
 from mcp_mail import auth as auth_module
 from mcp_mail.config import load
-from mcp_mail.server import create_server
+from mcp_mail.server import create_server, http_middleware
 
 from .conftest import BASE_ENV, ISSUER
 
@@ -40,7 +40,8 @@ async def _serve(app, requests):
 
 def _app(settings, verifier, provider=None):
     provider = provider or auth_module.build_auth(settings, verifier)
-    return create_server(settings, provider).http_app(path="/mcp", stateless_http=True, json_response=True)
+    return create_server(settings, provider).http_app(path="/mcp", stateless_http=True, json_response=True,
+                                                      middleware=http_middleware(settings))
 
 
 async def test_resource_mode_under_prefix(keypair, make_token):
@@ -53,18 +54,24 @@ async def test_resource_mode_under_prefix(keypair, make_token):
                               json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         # Forwarded unchanged by the proxy (root path + resource path).
         metadata = await c.get("/.well-known/oauth-protected-resource/mcp/mail-oauth/mcp")
-        slash = await c.post("/mcp/", headers=HEADERS, json={})
-        return anonymous, authed, metadata, slash
+        slash = await c.post("/mcp/", headers={**HEADERS, "Authorization": f"Bearer {make_token()}"},
+                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        root = await c.post("/", headers=HEADERS, json={})
+        return anonymous, authed, metadata, slash, root
 
-    anonymous, authed, metadata, slash = await _serve(app, requests)
+    anonymous, authed, metadata, slash, root = await _serve(app, requests)
     assert anonymous.status_code == 401
     assert ('resource_metadata="https://ai.example.com/.well-known/oauth-protected-resource/mcp/mail-oauth/mcp"'
             in anonymous.headers["www-authenticate"])
     assert authed.status_code == 200
     assert metadata.json()["resource"] == PUBLIC + "/mcp"
-    # Documented pitfall: the trailing-slash redirect loses the prefix.
-    assert slash.status_code == 307
-    assert slash.headers["location"] == "http://mcp-mail:8000/mcp"
+    # A trailing slash is served, not redirected: a redirect would point at the
+    # internal host without the prefix (http://mcp-mail:8000/mcp).
+    assert slash.status_code == 200, slash.text
+    assert {t["name"] for t in slash.json()["result"]["tools"]} >= {"whoami"}
+    # The prefix alone (Open WebUI URL without /mcp) names the real endpoint.
+    assert root.status_code == 404
+    assert PUBLIC + "/mcp" in root.text
 
 
 DISCOVERY = {
