@@ -14,6 +14,7 @@ import dataclasses
 import json
 import os
 import smtplib
+import subprocess
 import sys
 import time
 import uuid
@@ -150,6 +151,15 @@ async def main() -> None:
     check("mailboxes are per user: not in alice's INBOX", mine["total"] == 0, mine)
     mine = await tool(token, "search_messages", folder="Sent", subject=subject)
     check("but in alice's Sent", mine["total"] == 1, mine)
+
+    # ── mcp-mail-diagnose: the operator's tool, against the real chain ────────
+    diag = await asyncio.to_thread(
+        subprocess.run, ["mcp-mail-diagnose", "--introspect-client-id", "dovecot", "--imap"],
+        input=token + "\n", capture_output=True, text=True,
+        env={**os.environ, "INTROSPECT_CLIENT_SECRET": "dovecot-test-secret"},
+    )
+    check("mcp-mail-diagnose passes every check" + (" (incl. the exchange)" if exchange else ""),
+          diag.returncode == 0 and token not in diag.stdout, diag.stdout[-1500:] + diag.stderr[-500:])
 
     # ── The other SASL mechanism, without the MCP layer ───────────────────────
     bearer = dataclasses.replace(settings.mail, sasl_mechanism="OAUTHBEARER")

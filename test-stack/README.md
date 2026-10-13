@@ -8,7 +8,7 @@ every release (Dovecot 2.3 and 2.4).
 
 ```bash
 docker compose -f test-stack/docker-compose.yml up -d --build
-docker compose -f test-stack/docker-compose.yml run --rm e2e     # 22 checks (25 with token exchange)
+docker compose -f test-stack/docker-compose.yml run --rm e2e     # 23 checks (26 with token exchange)
 docker compose -f test-stack/docker-compose.yml down -v          # removes everything
 ```
 
