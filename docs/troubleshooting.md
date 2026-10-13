@@ -30,6 +30,7 @@ It never prints the token, and exits non-zero if any check fails.
 | Only `whoami` visible ("no tools") | Token lacks `mcp:mail/read` / `mcp:mail/send` | `whoami` lists `missing_scopes`. Assign them as **Default**, not Optional |
 | *Your access token has no 'email' claim* | User without email, or `email` scope not Default | Set the user's email; make `email` a Default scope |
 | *IMAP authentication failed* | Dovecot rejected the token; this server already accepted it | See next section |
+| Dovecot log: *Introspection failed: No username returned*, although introspection returns `email` | Dovecot 2.3.19 | Upgrade to 2.3.21+ or 2.4 (mail-server.md, Versions) |
 | Works for a while, then stops until re-login | Open WebUI couldn't refresh the token (refresh token expired with the SSO idle timeout) | `offline_access` in `OAUTH_SCOPES`, stable `WEBUI_SECRET_KEY` (open-webui.md, D16) |
 | *TLS certificate ... could not be verified* | Private CA | `MAIL_CA_FILE` |
 | Startup fails with a certificate error on OIDC discovery | Keycloak certificate from a private CA | `SSL_CERT_FILE` with a bundle that includes it (D21) |

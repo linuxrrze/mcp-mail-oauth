@@ -3,6 +3,19 @@
 Dovecot validates the token. Postfix delegates SMTP AUTH to Dovecot, so it
 needs no OAuth configuration of its own. Files are in `deploy/`.
 
+## Versions
+
+| Dovecot | Status |
+|---|---|
+| 2.4.1 | works, tested in CI (Debian 13 package) |
+| 2.3.21.1 | works, tested in CI (Debian 12 backports package) |
+| 2.3.19.1 | **does not work**: rejects every token with `Introspection failed: No username returned`, although Keycloak's answer contains `active: true` and `email` (Debian 12's own package) |
+
+Older 2.3 releases are untested. On Debian 12, install Dovecot from
+`bookworm-backports`. The test stack reproduces all three
+(`DOVECOT=2.4|2.3|2.3.19`, [test-stack/README.md](../test-stack/README.md)).
+Postfix was tested at 3.10.3 and 3.10.13. It only relays SASL to Dovecot.
+
 ## Dovecot 2.3
 
 1. Copy `deploy/dovecot/2.3/conf.d/auth-oauth2.conf.ext` to
@@ -26,8 +39,10 @@ The settings that matter, and why:
 
 ## Dovecot 2.4
 
-`deploy/dovecot/2.4/oauth2.conf` expresses the same settings in 2.4 syntax.
-It is adapted from the 2.4 documentation, so verify it with `doveconf -n`.
+`deploy/dovecot/2.4/oauth2.conf` expresses the same settings in 2.4 syntax:
+the oauth2 settings in an `oauth2 { }` block, and a `passdb oauth2` limited
+to the token mechanisms. Include it from `dovecot.conf`, keep your userdb,
+and check the result with `doveconf -n`. Tested with 2.4.1 (see Versions).
 
 ## Postfix
 

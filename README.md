@@ -91,8 +91,9 @@ token. They need `AUTH_MODE=proxy`; see [docs/keycloak.md](docs/keycloak.md#prox
 
 ## Releases
 
-Every push to `main` that passes the tests, both Trivy scans and a container
-smoke test publishes a new image and tag `vX.Y.Z`. The version is bumped
+Every push to `main` that passes the tests, the end-to-end checks against a
+real Keycloak/Postfix/Dovecot stack, both Trivy scans and a container smoke
+test publishes a new image and tag `vX.Y.Z`. The version is bumped
 automatically from commit messages (`feat:` → minor, `!`/`BREAKING CHANGE` →
 major, else patch). See [docs/ci.md](docs/ci.md).
 
@@ -107,6 +108,16 @@ The tests need no Keycloak or mail server. Tokens are signed with a local
 key, and the HTTP tests run the real FastMCP auth stack end to end, with only
 the IMAP/SMTP calls replaced.
 
+For the real thing, [`test-stack/`](test-stack/README.md) runs Keycloak,
+Postfix, Dovecot and this server in Docker, configured with the files from
+`deploy/`, plus end-to-end checks (also a CI gate):
+
+```bash
+docker compose -f test-stack/docker-compose.yml up -d --build
+docker compose -f test-stack/docker-compose.yml run --rm e2e
+docker compose -f test-stack/docker-compose.yml down -v
+```
+
 | Path | Contents |
 |---|---|
 | `src/mcp_mail/auth.py` | Which tokens are accepted (resource/proxy mode) |
@@ -115,5 +126,6 @@ the IMAP/SMTP calls replaced.
 | `src/mcp_mail/diagnose.py` | `mcp-mail-diagnose` |
 | `scripts/next_version.py` | Next release version from tags + commits |
 | `.github/workflows/ci.yml` | Tests, Trivy, build, release |
-| `deploy/` | Keycloak realm/script, Dovecot 2.3/2.4 and Postfix snippets, Open WebUI env |
+| `deploy/` | Keycloak script, Dovecot 2.3/2.4 and Postfix snippets, Open WebUI env |
+| `test-stack/` | Disposable Keycloak + Postfix/Dovecot stack, end-to-end checks |
 | `docs/` | Decisions, setup guides, troubleshooting |

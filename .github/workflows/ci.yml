@@ -65,7 +65,6 @@ jobs:
       - name: Check deploy files
         if: matrix.python == '3.12'
         run: |
-          python -m json.tool deploy/keycloak/realm-mail.json > /dev/null
           bash -n deploy/keycloak/setup-kcadm.sh
 
   scan-repo:
@@ -94,7 +93,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dovecot: ["2.3", "2.3.19", "2.4"]
+        # 2.3 = 2.3.21.1. Dovecot 2.3.19 is known not to work (docs/mail-server.md).
+        dovecot: ["2.3", "2.4"]
     env:
       DOVECOT: ${{ matrix.dovecot }}
       COMPOSE: docker compose -f test-stack/docker-compose.yml
