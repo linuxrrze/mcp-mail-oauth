@@ -111,7 +111,7 @@ jobs:
         run: $COMPOSE run --rm e2e
       - name: Logs
         if: always()
-        run: $COMPOSE logs --no-color --tail 200 keycloak mail mcp-mail
+        run: $COMPOSE logs --no-color --tail 200 keycloak-setup keycloak mail mcp-mail
       - name: Tear down
         if: always()
         run: $COMPOSE down -v
