@@ -12,7 +12,7 @@ fill() {  # deploy file -> destination, placeholders replaced (and checked)
 }
 
 case "$DOVECOT" in
-  2.3)
+  2.3|2.3.19)
     cp "$T/dovecot-2.3.conf" /etc/dovecot/dovecot.conf
     cp "$D/dovecot/2.3/conf.d/auth-oauth2.conf.ext" /etc/dovecot/conf.d/
     fill "$D/dovecot/2.3/dovecot-oauth2.conf.ext" /etc/dovecot/dovecot-oauth2.conf.ext
@@ -21,7 +21,7 @@ case "$DOVECOT" in
     cp "$T/dovecot-2.4.conf" /etc/dovecot/dovecot.conf
     fill "$D/dovecot/2.4/oauth2.conf" /etc/dovecot/oauth2.conf
     ;;
-  *) echo "DOVECOT must be 2.3 or 2.4" >&2; exit 1 ;;
+  *) echo "DOVECOT must be 2.3, 2.3.19 or 2.4" >&2; exit 1 ;;
 esac
 cp "$D/dovecot/auth-socket-for-postfix.conf" /etc/dovecot/
 chmod 0640 /etc/dovecot/*.conf* && chgrp dovecot /etc/dovecot/*.conf*

@@ -6,7 +6,7 @@
 #   docker compose -f test-stack/docker-compose.yml run --rm e2e
 #   docker compose -f test-stack/docker-compose.yml down -v
 #
-# DOVECOT=2.4 selects Dovecot 2.4 (Debian trixie) instead of 2.3 (bookworm).
+# DOVECOT selects the mail server: 2.3 (default, 2.3.21), 2.3.19 or 2.4.
 # --profile webui adds Open WebUI on http://localhost:3000.
 
 name: mcp-mail-test
@@ -109,6 +109,15 @@ services:
       - certs:/certs:ro
     ports:
       - "127.0.0.1:${MCP_PORT:-8000}:8000"
+    # /healthz needs no token and touches neither Keycloak nor the mail
+    # server: it says the process serves HTTP. Overrides the image's check so
+    # a changed PORT is honoured. The image has no curl; Python it has.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('PORT', '8000'), timeout=4).status != 200)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
       keycloak-setup:
         condition: service_completed_successfully

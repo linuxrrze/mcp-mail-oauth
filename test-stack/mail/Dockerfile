@@ -1,17 +1,23 @@
 # Postfix + Dovecot for the disposable test stack, configured with the files
 # from deploy/ (the ones users copy), only placeholders replaced.
-#   DOVECOT=2.3 -> Debian bookworm: Dovecot 2.3.19, Postfix 3.7  (deploy/dovecot/2.3)
-#   DOVECOT=2.4 -> Debian trixie:   Dovecot 2.4.1,  Postfix 3.10 (deploy/dovecot/2.4)
+#   DOVECOT=2.3    -> Dovecot 2.3.21.1 (Debian bookworm-backports)  deploy/dovecot/2.3
+#   DOVECOT=2.3.19 -> Dovecot 2.3.19.1 (Debian bookworm)            deploy/dovecot/2.3
+#   DOVECOT=2.4    -> Dovecot 2.4.1    (Debian trixie)              deploy/dovecot/2.4
 # Build context: the repository root.
 ARG DOVECOT=2.3
+FROM debian:bookworm-slim AS base-2.3.19
+ENV APT_TARGET=""
 FROM debian:bookworm-slim AS base-2.3
+RUN echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/backports.list
+ENV APT_TARGET="-t bookworm-backports"
 FROM debian:trixie-slim AS base-2.4
+ENV APT_TARGET=""
 FROM base-${DOVECOT}
 ARG DOVECOT
 
 RUN echo "postfix postfix/main_mailer_type select No configuration" | debconf-set-selections \
     && apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${APT_TARGET} \
          dovecot-imapd dovecot-lmtpd postfix postfix-pcre ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 5000 --user-group --home-dir /var/mail --no-create-home vmail \

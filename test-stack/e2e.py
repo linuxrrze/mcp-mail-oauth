@@ -88,6 +88,12 @@ async def main() -> None:
     check("whoami maps the token to alice@example.com", me["mailbox"] == "alice@example.com", me)
 
     # ── IMAP: Dovecot validates the same token by introspection ───────────────
+    resp = httpx2.post(f"{OIDC}/token/introspect", data={"token": token},
+                       auth=("dovecot", "dovecot-test-secret"))
+    answer = resp.json() if resp.status_code == 200 else {}
+    check("Keycloak introspection as the dovecot client: active, with the email claim",
+          answer.get("active") is True and answer.get("email") == "alice@example.com",
+          {"status": resp.status_code, "keys": sorted(answer)})
     folders = await tool(token, "list_folders")
     names = {f["name"] for f in folders["result"]} if isinstance(folders, dict) and "result" in folders else \
         {f["name"] for f in folders}

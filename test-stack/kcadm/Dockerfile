@@ -4,4 +4,5 @@ ARG KEYCLOAK_VERSION=26.8.1
 FROM quay.io/keycloak/keycloak:${KEYCLOAK_VERSION} AS keycloak
 FROM eclipse-temurin:21-jre
 COPY --from=keycloak /opt/keycloak/bin /opt/keycloak/bin
-ENV PATH=/opt/keycloak/bin:$PATH
+ENV PATH=/opt/keycloak/bin:$PATH HOME=/tmp
+USER 10001
