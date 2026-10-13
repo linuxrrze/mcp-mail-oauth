@@ -5,7 +5,13 @@ own mail** on an IMAP/SMTP server that accepts OAuth tokens (XOAUTH2 /
 OAUTHBEARER), using **the user's existing login**: no extra authorization
 step, no stored passwords, no per-user state on the server.
 
-Built for this setup:
+Built for Open WebUI + Keycloak + Dovecot/Postfix. The server supports two
+variants for the credential it presents to the mail server. Everything else,
+including the Open WebUI, Dovecot and Postfix configuration, is identical.
+Details, a decision chart and the Keycloak layouts:
+**[docs/mail-credential.md](docs/mail-credential.md)**.
+
+### Forwarded token (default, `MAIL_TOKEN_EXCHANGE=off`)
 
 ```mermaid
 sequenceDiagram
@@ -39,6 +45,35 @@ sequenceDiagram
 4. It logs in to Dovecot/Postfix with **the same token**. Dovecot checks it by
    introspection against Keycloak (active, audience `dovecot`, scope `mail`).
 
+Two Keycloak clients: Open WebUI's and `dovecot`.
+
+### Token exchange (`MAIL_TOKEN_EXCHANGE=on`)
+
+```mermaid
+sequenceDiagram
+    participant OW as Open WebUI
+    participant KC as Keycloak
+    participant MCP as mcp-mail-oauth
+    participant MS as Dovecot / Postfix
+
+    OW->>KC: OIDC login (client openwebui)
+    KC-->>OW: Token A<br/>aud: mcp-mail only, no mail scope
+    OW->>MCP: Tool call, Bearer token A
+    Note over MCP: Same checks as above
+    MCP->>KC: RFC 8693 exchange as client mcp-mail:<br/>token A for audience dovecot
+    KC-->>MCP: Token B (aud dovecot, scope mail),<br/>cached until shortly before expiry
+    MCP->>MS: IMAP / SMTP login with token B
+    MS->>KC: Introspect token B (as client dovecot)
+    KC-->>MS: active, email, scope mail
+    MS-->>MCP: Mailbox data
+    MCP-->>OW: Tool result
+```
+
+Steps 1 to 3 are the same. In step 4 the server presents a **separate token**
+that Keycloak issued to it for the mail server. Token A alone is refused by
+Dovecot. This conforms to the MCP spec's no-pass-through rule. It needs a
+third Keycloak client (`mcp-mail`) and Keycloak 26.2+.
+
 ## Why it's built this way
 
 The predecessor project needed **four Keycloak clients**, a second OAuth
@@ -50,10 +85,9 @@ The reasoning behind every choice, including the trade-offs, is in
 **[docs/decisions.md](docs/decisions.md)**. Start with D2.
 
 Reusing the token is, strictly, the "token pass-through" the MCP
-authorization spec forbids, a deliberate default (D4). `MAIL_TOKEN_EXCHANGE=on`
-conforms instead: the server exchanges the token for a separate mail-server
-token (RFC 8693), at the cost of a third client. Open WebUI's token then
-can't open the mailbox by itself (D23, [docs/keycloak.md](docs/keycloak.md#token-exchange-optional)).
+authorization spec forbids. The default does it deliberately (D4); token
+exchange is the conforming alternative (D23). How to choose:
+[docs/mail-credential.md](docs/mail-credential.md).
 
 ## Tools
 
@@ -75,13 +109,18 @@ you which ones.
 setup: follow [docs/integration.md](docs/integration.md)**, the step-by-step
 walkthrough with a check after each step. In short:
 
+0. **Pick the mail credential**: forwarded token (default) or token exchange
+   ([docs/mail-credential.md](docs/mail-credential.md)). Only steps 1 and 3
+   differ between them.
 1. **Keycloak**: client scopes, audience mappers, Dovecot's introspection
-   client. One script does it: [docs/keycloak.md](docs/keycloak.md).
+   client. One script does it, `setup-kcadm.sh` (forwarded token) or
+   `setup-kcadm.sh --exchange` (token exchange): [docs/keycloak.md](docs/keycloak.md).
 2. **Dovecot + Postfix**: oauth2 passdb with introspection; Postfix SASL via
    Dovecot. See [docs/mail-server.md](docs/mail-server.md).
 3. **This server**:
    ```bash
    cp .env.example .env    # set OIDC_ISSUER, BASE_URL, MAIL_* hosts
+                           # token exchange: also MAIL_TOKEN_EXCHANGE=on, OIDC_CLIENT_ID/SECRET
    docker compose up -d
    ```
 4. **Open WebUI**: SSO with `offline_access`, then add this server as an MCP
@@ -94,6 +133,8 @@ Behind Traefik or another reverse proxy, also under a sub-directory such as
 
 Other MCP clients (Claude Desktop, MCP Inspector) can't forward a Keycloak
 token. They need `AUTH_MODE=proxy`; see [docs/keycloak.md](docs/keycloak.md#proxy-mode).
+`AUTH_MODE` is independent of the mail credential: it decides how clients
+log in to this server, not what the server presents to the mail server.
 
 ## Releases
 

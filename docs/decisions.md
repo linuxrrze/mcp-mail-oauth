@@ -675,6 +675,8 @@ standard token exchange). The default stays `off`.
 Deployments that need spec conformance, or keep Open WebUI in a different
 trust zone than the mail server, should turn it on.
 
+Setup and diagrams of both variants: [mail-credential.md](mail-credential.md).
+
 **Verified** by the test stack (`MAIL_TOKEN_EXCHANGE=on`, a CI gate) against
 Keycloak 26.8.1 and Dovecot 2.4.1. Beyond the shared checks, it asserts:
 - Open WebUI's token is inactive for Dovecot and refused at IMAP.

@@ -71,9 +71,13 @@ def client_settings(settings: Settings) -> list[str]:
     ]
     if settings.token_exchange:
         lines.append(
-            f"  MAIL_TOKEN_EXCHANGE=on: mail-server tokens are exchanged by client {settings.oidc_client_id!r}"
-            f" (audience {settings.mail_token_audience!r}); the client's own token needs no `mail` scope"
+            f"  Mail credential: token exchange (MAIL_TOKEN_EXCHANGE=on). Client {settings.oidc_client_id!r} exchanges"
+            f" the token for one with audience {settings.mail_token_audience!r}; the client's own token must NOT"
+            " carry the `mail` scope (docs/mail-credential.md)"
         )
+    else:
+        lines.append("  Mail credential: forwarded token (default). The same token logs in to IMAP/SMTP, so it"
+                     " also needs the `mail` scope and the mail server's audience (docs/mail-credential.md)")
     if settings.auth_mode == "proxy":
         lines += [
             "  AUTH_MODE=proxy: other MCP clients (or Open WebUI with Auth: OAuth 2.1) can sign in through",
@@ -162,7 +166,7 @@ def create_server(settings: Settings, auth: AuthProvider | None = None,
             "audience": claims.get("aud"),
             "scopes": sorted(scopes),
             "missing_scopes": [s for s in TOOL_SCOPES if s not in scopes],
-            "mail_login": "exchanged credential (RFC 8693)" if exchanger else "forwarded credential",
+            "mail_credential": "token exchange (RFC 8693)" if exchanger else "forwarded (default)",
             "expires_in_seconds": int(token.expires_at - time.time()) if token.expires_at else None,
         }
 

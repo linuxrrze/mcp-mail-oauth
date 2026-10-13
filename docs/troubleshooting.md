@@ -2,6 +2,17 @@
 
 Work down the chain; each step can only fail if the previous ones pass.
 
+**First, which mail credential is running?** The startup log says
+`mail credential=forwarded token` or `mail credential=token exchange`, and
+`whoami` reports `mail_credential`. It must match how Keycloak was set up
+(`setup-kcadm.sh` vs. `setup-kcadm.sh --exchange`,
+[mail-credential.md](mail-credential.md)). A mismatch shows up like this:
+
+| Server | Keycloak | Symptom |
+|---|---|---|
+| forwarded token | set up for exchange | Dovecot rejects every login: Open WebUI's token lacks `dovecot` in `aud` and the `mail` scope |
+| token exchange | set up for forwarded token | *Keycloak refused to exchange ...*: `mcp-mail` has no token exchange, or doesn't exist |
+
 ## `mcp-mail-diagnose`
 
 Checks one token against every rule. Get a token for a test user from
