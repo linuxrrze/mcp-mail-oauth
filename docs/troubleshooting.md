@@ -40,6 +40,7 @@ It never prints the token, and exits non-zero if any check fails.
 | Every request 401, even `whoami` | Token lacks `mcp-mail` in `aud`, wrong issuer, or Open WebUI auth type isn't "OAuth" | Audience mapper in the `mail` scope, assigned **Default** (keycloak.md). Users must log in again after scope changes |
 | Only `whoami` visible ("no tools") | Token lacks `mcp:mail/read` / `mcp:mail/send` | `whoami` lists `missing_scopes`. Assign them as **Default**, not Optional |
 | *Your access token has no 'email' claim* | User without email, or `email` scope not Default | Set the user's email; make `email` a Default scope |
+| *Your email address ... is not verified* | `email_verified` isn't true in the token (D24) | *Users → user → Email verified* on, then log in again. `MAIL_REQUIRE_EMAIL_VERIFIED=off` only if all addresses are admin-managed |
 | *IMAP authentication failed* | Dovecot rejected the token; this server already accepted it | See next section |
 | Dovecot log: *Introspection failed: No username returned*, although introspection returns `email` | Dovecot 2.3.19 | Upgrade to 2.3.21+ or 2.4 (mail-server.md, Versions) |
 | Works for a while, then stops until re-login | Open WebUI couldn't refresh the token (refresh token expired with the SSO idle timeout) | `offline_access` in `OAUTH_SCOPES`, stable `WEBUI_SECRET_KEY` (open-webui.md, D16) |

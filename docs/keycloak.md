@@ -107,6 +107,26 @@ Then configure the server: `MAIL_TOKEN_EXCHANGE=on`, `OIDC_CLIENT_ID=mcp-mail`,
 `OIDC_CLIENT_SECRET` ([mail-credential.md](mail-credential.md#token-exchange)).
 To switch between the two: [mail-credential.md](mail-credential.md#switching).
 
+## Users can't change their own address
+
+Both variants. The mailbox is the token's `email` claim, so whoever can edit
+a user's email can point that user at another mailbox. The server only
+accepts verified addresses (`MAIL_REQUIRE_EMAIL_VERIFIED`, D24). Also make
+the attribute admin-only, since Dovecot can't check `email_verified`:
+
+*Realm settings → User profile → email → Permissions*: *Who can edit*
+**admin** only. Or with kcadm:
+
+```sh
+kcadm.sh get users/profile -r mail > profile.json
+jq '.attributes |= map(if .name == "email" then .permissions.edit = ["admin"] else . end)' \
+  profile.json > profile-locked.json
+kcadm.sh update users/profile -r mail -f profile-locked.json
+```
+
+Each user also needs *Email verified* on (*Users → user*), or the server
+answers *your email address ... is not verified*.
+
 ## Either way: Dovecot's view
 
 Save the generated token in `token.txt` and run, in the container:
