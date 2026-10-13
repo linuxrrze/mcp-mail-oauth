@@ -35,6 +35,7 @@ It never prints the token, and exits non-zero if any check fails.
 | *TLS certificate ... could not be verified* | Private CA | `MAIL_CA_FILE` |
 | Startup fails with a certificate error on OIDC discovery | Keycloak certificate from a private CA | `SSL_CERT_FILE` with a bundle that includes it (D21) |
 | Open WebUI can't connect; server log shows `"POST / HTTP/1.1" 404` | The configured URL lacks the endpoint path | End the URL with `/mcp`, e.g. `https://ai.example.com/mcp/mail-oauth/mcp` (reverse-proxy.md) |
+| *Keycloak refused to exchange your token for a mail token* | `MAIL_TOKEN_EXCHANGE=on` but Keycloak isn't set up for it: no token exchange on `mcp-mail`, or the token lacks `mcp-mail` in `aud` | `setup-kcadm.sh --exchange`; users log in again (keycloak.md, Token exchange) |
 | *refused sender* on send | Postfix's sender-login map doesn't map the address to the login | Map each address to itself (deploy/postfix/main.cf.snippet) |
 
 ## Dovecot rejects the token

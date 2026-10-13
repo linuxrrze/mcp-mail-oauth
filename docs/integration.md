@@ -65,7 +65,9 @@ REALM=<your realm> OPENWEBUI_CLIENT=<Open WebUI's client id> deploy/keycloak/set
 ```
 
 Note the printed `dovecot` client secret. Details and a click-through
-version: [keycloak.md](keycloak.md).
+version: [keycloak.md](keycloak.md). For separate mail-server tokens
+(spec-conforming, a third client), see [Token exchange](keycloak.md#token-exchange-optional);
+the checks below then differ as described there.
 
 **Check:** *Clients → (Open WebUI client) → Client scopes → Evaluate*, pick a
 real user, open *Generated access token*: `aud` contains `mcp-mail` and

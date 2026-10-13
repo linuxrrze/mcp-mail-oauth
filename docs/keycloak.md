@@ -82,3 +82,43 @@ Open WebUI's "OAuth 2.1" type):
 
 Forwarded Open WebUI tokens keep working in proxy mode. Users of DCR clients
 see FastMCP's consent page once per client (D15).
+
+## Token exchange (optional)
+
+`MAIL_TOKEN_EXCHANGE=on` gives the mail server its own tokens instead of the
+one Open WebUI forwards (reasons and trade-offs: [decisions.md](decisions.md)
+D23). Needs Keycloak 26.2+.
+
+```bash
+REALM=mail OPENWEBUI_CLIENT=openwebui deploy/keycloak/setup-kcadm.sh --exchange   # add --proxy URL if used
+```
+
+What `--exchange` changes:
+
+| Object | Change |
+|---|---|
+| `mcp:mail/read`, `mcp:mail/send` | get an audience mapper `mcp-mail` (custom audience) |
+| Open WebUI's client | keeps the two `mcp:mail/*` scopes, **loses** `mail` |
+| `mcp-mail` | confidential client (created if missing), *Standard token exchange* on, `mail` as Default scope |
+
+The server then needs:
+
+```
+MAIL_TOKEN_EXCHANGE=on
+OIDC_CLIENT_ID=mcp-mail              # must equal MCP_AUDIENCE
+OIDC_CLIENT_SECRET=<printed by the script>
+#OIDC_TOKEN_ENDPOINT=http://keycloak:8080/realms/mail/protocol/openid-connect/token   # if the issuer isn't reachable
+#MAIL_TOKEN_AUDIENCE=dovecot          # Dovecot's introspection client
+```
+
+Dovecot and Postfix stay unchanged. Users log in to Open WebUI again once,
+so their tokens lose `mail`/`dovecot`. Until then, their old tokens still
+work, because the exchange accepts them too.
+
+**Check:** a token generated for the Open WebUI client (*Client scopes →
+Evaluate*) now shows `"aud": ["mcp-mail", ...]` without `dovecot`, and
+`mcp-mail-diagnose --introspect-client-id dovecot --imap` reports the
+exchange and logs in with the exchanged token.
+
+**Going back:** run the script without `--exchange`, which re-adds `mail` to
+Open WebUI's client. Then set `MAIL_TOKEN_EXCHANGE=off`.

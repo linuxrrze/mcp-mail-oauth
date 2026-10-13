@@ -109,11 +109,9 @@ trust boundary.
   anyway, only one of them is new. No `authorize_mail` step, no callback
   route, no per-user token cache, no in-memory state lost on restart.
 - Only works when the mail server trusts the same issuer (D18).
-- Upgrade path, if the shared-token trade-off ever becomes unacceptable:
-  RFC 8693 token exchange, so Open WebUI's token is audience-restricted to
-  this server and the server exchanges it for a Dovecot-audience token. That
-  costs one confidential client and Keycloak 26.2+. It is not implemented
-  (YAGNI), but D4's audience separation already prepares for it.
+- Reusing the token deviates from the MCP spec's "no pass-through" rule (D4).
+  `MAIL_TOKEN_EXCHANGE=on` (D23) is the conforming alternative: RFC 8693
+  token exchange, one more confidential client, Keycloak 26.2+.
 
 ---
 
@@ -165,10 +163,27 @@ audience" only accepts names of existing clients, and in resource mode no
 server's URL as `MCP_AUDIENCE` if you prefer it, and set the same string in
 the mapper.
 
-**About passthrough.** The token *is* issued for this server: its `aud` names
-it, and that is checked. That the same token is also accepted by Dovecot is
-the deliberate design of D2, made explicit by a second `aud` entry, not a
-token being smuggled to a party it wasn't meant for.
+**About passthrough: by default this deviates from the MCP spec.** The
+inbound side conforms: the server only accepts tokens with its own audience.
+But the spec goes further ([MCP authorization, *Access Token Privilege
+Restriction*][mcp-auth]): "If the MCP server makes requests to upstream
+APIs, it may act as an OAuth client to them. The access token used at the
+upstream API is a separate token, issued by the upstream authorization
+server. The MCP server **MUST NOT** pass through the token it received from
+the MCP client." By default (D2), this server logs in to IMAP/SMTP with the
+token it received. That is the pass-through the sentence forbids, even
+though `dovecot` is an intended audience of that token.
+
+The risks the spec guards against are covered by other means:
+- **No confused deputy.** Dovecot doesn't trust the token because this server
+  forwarded it. It asks Keycloak itself, checks its own audience and the
+  `mail` scope, and enforces revocation.
+- **What remains is D2's trade-off.** A leaked token also works on IMAP
+  directly, for the token's lifetime.
+
+The deviation is a deliberate default, not an oversight. For deployments
+that need conformance or don't accept that trade-off, `MAIL_TOKEN_EXCHANGE=on`
+removes it (D23).
 
 ---
 
@@ -608,8 +623,68 @@ CI runs it for Dovecot 2.3 and 2.4 and publishes only if it passes.
   - a throwaway CA;
   - plain HTTP to Keycloak inside the Docker network.
 
+---
+
+## D23. Optional RFC 8693 token exchange for the mail server
+
+**Context.** D2 reuses the incoming token at IMAP/SMTP. That needs only two
+Keycloak clients, but it is token pass-through as the MCP authorization spec
+defines it (D4), and a token leaked from Open WebUI also opens the mailbox
+directly.
+
+**Decision.** `MAIL_TOKEN_EXCHANGE=on` makes the server obtain a separate
+mail-server token per user with OAuth 2.0 Token Exchange (RFC 8693, Keycloak
+standard token exchange). The default stays `off`.
+
+| | `off` (default, D2) | `on` |
+|---|---|---|
+| Keycloak clients | 2: Open WebUI's, `dovecot` | 3: + confidential `mcp-mail`, token exchange enabled |
+| Open WebUI's token | `aud` mcp-mail + dovecot, scope `mail` | `aud` mcp-mail only, no `mail` scope |
+| Credential at IMAP/SMTP | that same token | a token issued to `mcp-mail`: `aud` dovecot, scope `mail`, same user and session |
+| A leaked Open WebUI token | also opens the mailbox, for its lifetime | is refused by Dovecot |
+| MCP spec "no pass-through" | deviates | conforms |
+| Keycloak calls per tool call | none | one exchange per incoming token, then cached |
+| Keycloak version | any recent | 26.2+ |
+
+**How.**
+- **The incoming token.** It must name `mcp-mail` in `aud`: Keycloak only
+  exchanges a token for a client that is in that token's audience. So
+  `MCP_AUDIENCE` must equal `OIDC_CLIENT_ID`, and `config.load` refuses to
+  start otherwise. `setup-kcadm.sh --exchange` puts that audience on the
+  `mcp:mail/*` scopes and takes `mail` away from Open WebUI's client.
+- **The exchange.** The server asks for `audience=MAIL_TOKEN_AUDIENCE`
+  (default `dovecot`). It authenticates as `mcp-mail`, whose default scope
+  `mail` supplies Dovecot's audience and the `scope = mail` that Dovecot
+  checks. Nothing changes on the Dovecot or Postfix side.
+- **Caching.** Exchanged tokens are cached in memory, keyed by a SHA-256
+  hash of the incoming token, never the token itself. An entry lives until
+  30 s before the earlier of the two expiry times, and at most 1,000 entries
+  are kept. Logout still takes effect immediately: Dovecot introspects the
+  cached token too, and Keycloak ties it to the same user session. The test
+  stack checks exactly this.
+- **One client for both purposes.** In proxy mode, `mcp-mail` is the same
+  client that runs the login flow.
+
+**Why not the default.**
+- Every existing setup (yours included) works without it.
+- It costs a third client and a Keycloak call on each new token.
+- The risk it removes is bounded by the token lifetime (D16). And Open WebUI,
+  the party holding the token, already sees all mail passing through tool
+  calls (D2).
+
+Deployments that need spec conformance, or keep Open WebUI in a different
+trust zone than the mail server, should turn it on.
+
+**Verified** by the test stack (`MAIL_TOKEN_EXCHANGE=on`, a CI gate) against
+Keycloak 26.8.1 and Dovecot 2.4.1. Beyond the shared checks, it asserts:
+- Open WebUI's token is inactive for Dovecot and refused at IMAP.
+- The exchanged token is issued to `mcp-mail`, for `dovecot`, with scope
+  `mail`, for the same user.
+- Logout invalidates the cached exchanged token.
+
 [owui-19820]: https://github.com/open-webui/open-webui/discussions/19820
 [owui-28319]: https://github.com/open-webui/open-webui/issues/28319
 [owui-29571]: https://github.com/open-webui/open-webui/issues/29571
 [kc26-dovecot]: https://deburen.co.uk/5/8/
 [net-smtp]: https://github.com/pear/Net_SMTP/pull/70
+[mcp-auth]: https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization

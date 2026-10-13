@@ -49,6 +49,12 @@ Dovecot's introspection credentials), no extra click, no server-side state.
 The reasoning behind every choice, including the trade-offs, is in
 **[docs/decisions.md](docs/decisions.md)**. Start with D2.
 
+Reusing the token is, strictly, the "token pass-through" the MCP
+authorization spec forbids, a deliberate default (D4). `MAIL_TOKEN_EXCHANGE=on`
+conforms instead: the server exchanges the token for a separate mail-server
+token (RFC 8693), at the cost of a third client. Open WebUI's token then
+can't open the mailbox by itself (D23, [docs/keycloak.md](docs/keycloak.md#token-exchange-optional)).
+
 ## Tools
 
 | Tool | Needs scope | What it does |

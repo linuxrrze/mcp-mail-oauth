@@ -127,12 +127,12 @@ async def main() -> None:
     folders = await tool(token, "list_folders")
     names = {f["name"] for f in folders["result"]} if isinstance(folders, dict) and "result" in folders else \
         {f["name"] for f in folders}
-    check("IMAP login with the forwarded token (XOAUTH2, Dovecot oauth2)", {"INBOX", "Sent"} <= names, names)
+    check("list_folders: IMAP login with the mail token (XOAUTH2, Dovecot oauth2)", {"INBOX", "Sent"} <= names, names)
 
     # ── SMTP: Postfix SASL via Dovecot, LMTP delivery, Sent copy ──────────────
     subject = f"e2e {uuid.uuid4()}"
     sent = await tool(token, "send_message", to=["bob@example.com"], subject=subject, body="hello from the test stack")
-    check("SMTP submission with the forwarded token (Postfix -> Dovecot auth)", sent["status"] == "sent", sent)
+    check("send_message: SMTP submission with the mail token (Postfix -> Dovecot auth)", sent["status"] == "sent", sent)
     check("copy saved to Sent", sent.get("saved_to") == "Sent", sent)
 
     bob = login("bob")["access_token"]
