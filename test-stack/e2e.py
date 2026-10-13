@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import uuid
+from email.message import EmailMessage
 
 import httpx2
 from fastmcp import Client
@@ -31,7 +32,8 @@ from mcp_mail.config import load
 OIDC = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080") + "/realms/mail/protocol/openid-connect"
 MCP_URL = os.environ.get("MCP_URL", "http://mcp-mail:8000/mcp")
 CLIENT = {"client_id": "openwebui", "client_secret": "openwebui-test-secret"}
-ALL_TOOLS = {"whoami", "list_folders", "list_messages", "search_messages", "read_message", "send_message"}
+ALL_TOOLS = {"whoami", "list_folders", "list_messages", "search_messages", "read_message", "get_message_info",
+             "send_message"}
 
 passed = 0
 
@@ -93,7 +95,7 @@ async def main() -> None:
     # ── MCP server: JWT verification and scope-based tool list ────────────────
     async with mcp(token) as client:
         names = {t.name for t in await client.list_tools()}
-    check("MCP server accepts the token and lists all six tools", names == ALL_TOOLS, names)
+    check("MCP server accepts the token and lists all seven tools", names == ALL_TOOLS, names)
     me = await tool(token, "whoami")
     check("whoami maps the token to alice@example.com", me["mailbox"] == "alice@example.com", me)
 
@@ -132,7 +134,9 @@ async def main() -> None:
 
     # ── SMTP: Postfix SASL via Dovecot, LMTP delivery, Sent copy ──────────────
     subject = f"e2e {uuid.uuid4()}"
-    sent = await tool(token, "send_message", to=["bob@example.com"], subject=subject, body="hello from the test stack")
+    # The display name carries an address: it must stay a name (security review, finding 1).
+    sent = await tool(token, "send_message", to=['"Bob, alice@example.com" <bob@example.com>'], subject=subject,
+                      body="hello from the test stack")
     check("send_message: SMTP submission with the mail token (Postfix -> Dovecot auth)", sent["status"] == "sent", sent)
     check("copy saved to Sent", sent.get("saved_to") == "Sent", sent)
 
@@ -151,6 +155,30 @@ async def main() -> None:
     check("mailboxes are per user: not in alice's INBOX", mine["total"] == 0, mine)
     mine = await tool(token, "search_messages", folder="Sent", subject=subject)
     check("but in alice's Sent", mine["total"] == 1, mine)
+
+    # ── Large message: structure only, never the attachment ───────────────────
+    big = EmailMessage()
+    big["From"], big["To"], big["Subject"] = "carol@example.com", "alice@example.com", f"{subject} big"
+    big.set_content("Grüße, siehe Anhang.\n" * 50, cte="quoted-printable")
+    big.add_alternative("<p>Gr&uuml;&szlig;e</p>", subtype="html")
+    big.add_attachment(os.urandom(3_000_000), maintype="application", subtype="octet-stream",
+                       filename="Bericht März.bin")
+    with mail.imap_session(settings.mail, "alice@example.com", mail_token) as conn:
+        conn.append('"INBOX"', None, None, big.as_bytes())
+    found = await tool(token, "search_messages", subject=f"{subject} big")
+    uid = found["messages"][0]["uid"]
+    info = await tool(token, "get_message_info", uid=uid)
+    check("get_message_info: attachment name (RFC 2231), type and size, no body",
+          "body" not in info and info["body_type"] == "text/plain"
+          and [(a["filename"], a["content_type"]) for a in info["attachments"]]
+          == [("Bericht März.bin", "application/octet-stream")]
+          and abs(info["attachments"][0]["size"] - 3_000_000) < 50_000, info)
+    started_read = time.monotonic()
+    message = await tool(token, "read_message", uid=uid, max_chars=30)
+    check("read_message on a 4 MB message: QP text part decoded and cut, attachment listed",
+          message["body"] == ("Grüße, siehe Anhang.\n" * 2)[:30] and message["body_truncated"]
+          and len(message["attachments"]) == 1, {k: message[k] for k in ("body", "body_truncated", "attachments")})
+    print(f"      ({time.monotonic() - started_read:.2f}s)", flush=True)
 
     # ── mcp-mail-diagnose: the operator's tool, against the real chain ────────
     diag = await asyncio.to_thread(

@@ -69,6 +69,8 @@ def client_settings(settings: Settings) -> list[str]:
         f"  Tokens must come from {settings.oidc_issuer}, with {settings.mcp_audience!r} in aud"
         f" and the scopes {', '.join(TOOL_SCOPES)} (Keycloak: Default client scopes)",
     ]
+    if settings.mail.username_claim == "email" and settings.mail.require_email_verified:
+        lines.append("  Mailbox: the token's email claim, only if email_verified is true (MAIL_REQUIRE_EMAIL_VERIFIED)")
     if settings.token_exchange:
         lines.append(
             f"  Mail credential: token exchange (MAIL_TOKEN_EXCHANGE=on). Client {settings.oidc_client_id!r} exchanges"
@@ -102,12 +104,22 @@ def _identity(settings: Settings, token: AccessToken) -> tuple[str, str]:
     same user and session.
     """
     claim = settings.mail.username_claim
-    username = (token.claims or {}).get(claim)
+    claims = token.claims or {}
+    username = claims.get(claim)
     if not isinstance(username, str) or not username:
         raise ToolError(
             f"Your access token has no {claim!r} claim, so the mailbox can't be determined. "
             f"Make sure the Keycloak user has it set and the client's token includes it "
             f"(for `email`: the `email` client scope must be a Default scope)."
+        )
+    # An email address nobody has verified is just a string a user typed:
+    # with self-service profile editing it could name someone else's mailbox
+    # (D24).
+    if claim == "email" and settings.mail.require_email_verified and claims.get("email_verified") is not True:
+        raise ToolError(
+            f"Your email address {username!r} is not verified (email_verified is not true in your token), "
+            "so it can't be used to select a mailbox. Ask an administrator to verify it in Keycloak "
+            "(Users > user > Email verified)."
         )
     return username, token.token
 
@@ -162,6 +174,7 @@ def create_server(settings: Settings, auth: AuthProvider | None = None,
             "subject": claims.get("sub"),
             "mailbox": claims.get(cfg.username_claim),
             "mailbox_claim": cfg.username_claim,
+            "email_verified": claims.get("email_verified"),
             "client": claims.get("azp") or token.client_id,
             "audience": claims.get("aud"),
             "scopes": sorted(scopes),
@@ -219,6 +232,17 @@ def create_server(settings: Settings, auth: AuthProvider | None = None,
         """Read one message: headers, plain-text body (HTML converted to text) and
         the list of attachments. Does not mark it as read unless mark_read is set."""
         return await _run(mail.read_message, cfg, *(await credentials(token)), folder, uid, max_chars, mark_read)
+
+    @mcp.tool(auth=require_scopes(READ_SCOPE), annotations=READ_ONLY)
+    async def get_message_info(
+        uid: str,
+        folder: str = "INBOX",
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        """One message's metadata without its body: headers, read/flagged state,
+        size and attachment names, types and sizes. Cheaper than read_message when
+        only that is needed. Never marks the message as read."""
+        return await _run(mail.message_info, cfg, *(await credentials(token)), folder, uid)
 
     @mcp.tool(auth=require_scopes(SEND_SCOPE), annotations={"destructiveHint": False, "openWorldHint": True})
     async def send_message(
