@@ -7,14 +7,29 @@ step, no stored passwords, no per-user state on the server.
 
 Built for this setup:
 
-```
- Browser ──login──▶ Keycloak ◀──introspect (as "dovecot")── Dovecot ◀── Postfix (SASL via Dovecot)
-    │                  ▲                                         ▲
-    ▼                  │ refresh                                 │ IMAP/SMTP, XOAUTH2 with
- Open WebUI ───────────┘                                         │ the user's Keycloak token
-    │  MCP, Authorization: Bearer <user's Keycloak access token>  │
-    └──────────────────────────▶ mcp-mail-oauth ──────────────────┘
-                                 checks iss, aud ∋ "mcp-mail", scopes
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant OW as Open WebUI
+    participant KC as Keycloak
+    participant MCP as mcp-mail-oauth
+    participant MS as Dovecot / Postfix
+
+    U->>OW: Log in
+    OW->>KC: OIDC login (client openwebui)
+    KC-->>OW: Access token<br/>aud: mcp-mail, dovecot<br/>scope: mail, mcp:mail/read, mcp:mail/send
+
+    U->>OW: "Show my newest mails"
+    OW->>MCP: MCP tool call<br/>Authorization: Bearer (user's token)
+    Note over MCP: Verifies signature, issuer,<br/>audience mcp-mail and tool scope.<br/>Mailbox = token's email claim
+    MCP->>MS: IMAP / SMTP login,<br/>XOAUTH2 with the same token
+    MS->>KC: Introspect token (as client dovecot)
+    KC-->>MS: active, email, scope mail
+    MS-->>MCP: Mailbox data
+    MCP-->>OW: Tool result
+    OW-->>U: Answer
+
+    Note over OW,KC: Before the token expires, Open WebUI<br/>refreshes it with its refresh token
 ```
 
 1. The user logs in to Open WebUI with Keycloak.

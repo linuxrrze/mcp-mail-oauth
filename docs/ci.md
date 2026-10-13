@@ -3,10 +3,26 @@
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`
 (docs-only changes are skipped).
 
-```
-              ┌─ test (Python 3.11 / 3.12 / 3.13) ─┐
- push / PR ───┼─ scan-repo (Trivy: secrets, misconfig) ─┼─▶ image: build ─▶ Trivy image scan ─▶ smoke test ─┬─▶ (PR: stop)
-              └─ version (next vX.Y.Z) ─────────┘                                          └─▶ (main) push image ─▶ git tag ─▶ release
+```mermaid
+flowchart LR
+    trigger(["push to main<br/>or pull request"])
+
+    subgraph gates["Run in parallel"]
+        direction TB
+        test["Tests<br/>Python 3.11 / 3.12 / 3.13"]
+        repo["Trivy repository scan<br/>secrets, misconfig"]
+        version["Next version<br/>from tags + commits"]
+    end
+
+    trigger --> test & repo & version
+    test & repo & version --> build["Build image once<br/>(loaded locally)"]
+    build --> scan["Trivy image scan<br/>fixable HIGH / CRITICAL"]
+    scan --> smoke["Smoke test<br/>the container"]
+    smoke --> decide{"main and<br/>new commits?"}
+    decide -- "no (PR)" --> stop(["Stop: nothing published"])
+    decide -- yes --> push["Push the scanned image"]
+    push --> tag["Git tag vX.Y.Z"]
+    tag --> release(["GitHub release"])
 ```
 
 **An image is published only if all of these pass:** the full test suite on
