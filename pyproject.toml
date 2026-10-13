@@ -35,3 +35,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Same single Authlib warning the package silences at runtime (decisions.md D21).
+filterwarnings = ["ignore:The httpx module is deprecated:DeprecationWarning"]

@@ -517,6 +517,27 @@ image scan and a container smoke test have all passed, and only from `main`.
 
 [owui-mcp]: https://docs.openwebui.com/features/extensibility/mcp
 [owui-sso]: https://docs.openwebui.com/features/authentication-access/auth/sso/
+
+---
+
+## D21. One third-party startup warning is silenced
+
+**Decision.** `mcp_mail/__init__.py` ignores Authlib's "The httpx module is
+deprecated; please use httpx2 instead" warning, and only that message.
+
+**Why.** Authlib 1.8 emits it at import time when the `httpx2` package isn't
+installed. FastMCP's OAuth proxy imports Authlib's httpx client, so it
+appeared on every start, in both auth modes, without anything an operator
+could do about it. Installing `httpx2` instead would switch Authlib to a
+different HTTP library underneath FastMCP, which FastMCP doesn't test
+against. That fix belongs upstream.
+
+**Consequences.** Authlib forces its own warnings to "always" when it is
+imported, so the filter is added after that import. Other Authlib
+deprecations still show. `tests/test_warnings.py` fails if the warning comes
+back, for example after Authlib rewords it. Revisit once FastMCP moves to
+`httpx2`.
+
 [owui-19820]: https://github.com/open-webui/open-webui/discussions/19820
 [owui-28319]: https://github.com/open-webui/open-webui/issues/28319
 [owui-29571]: https://github.com/open-webui/open-webui/issues/29571
