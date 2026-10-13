@@ -97,7 +97,8 @@ exchange is the conforming alternative (D23). How to choose:
 | `list_folders` | `mcp:mail/read` | Folders and their flags |
 | `list_messages` | `mcp:mail/read` | Newest first, paged, optionally unread only |
 | `search_messages` | `mcp:mail/read` | By sender, recipient, subject, text, date range, unread |
-| `read_message` | `mcp:mail/read` | Headers, text body, attachment list. Doesn't mark as read by default |
+| `read_message` | `mcp:mail/read` | Headers, text body, attachment list. Fetches only the text part, never attachments. Doesn't mark as read by default |
+| `get_message_info` | `mcp:mail/read` | Headers, flags, size, attachment names/types/sizes; no body |
 | `send_message` | `mcp:mail/send` | Plain-text mail from your own address, optional reply threading; copy saved to Sent |
 
 Tools whose scope is missing from the token are hidden, and `whoami` tells

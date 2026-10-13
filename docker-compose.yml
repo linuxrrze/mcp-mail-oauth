@@ -18,8 +18,11 @@ services:
     volumes:
       # Only used in AUTH_MODE=proxy; harmless otherwise.
       - mcp-mail-data:/data
+    # Localhost only: the requests carry users' bearer tokens, so plain HTTP
+    # must not leave this host. The TLS reverse proxy (or Open WebUI on the
+    # same Docker network, via http://mcp-mail:8000/mcp) is the way in.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
     # /healthz needs no token and touches neither Keycloak nor the mail
     # server: it says the process serves HTTP. Overrides the image's check so

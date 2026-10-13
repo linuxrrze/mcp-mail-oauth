@@ -296,7 +296,8 @@ testing" settings tend to survive into production.
 | `list_folders` | `mcp:mail/read` | |
 | `list_messages` | `mcp:mail/read` | newest first, paged (`limit` ≤ 50, `offset`) |
 | `search_messages` | `mcp:mail/read` | server-side IMAP SEARCH; UTF-8 search terms supported |
-| `read_message` | `mcp:mail/read` | `BODY.PEEK`: does **not** mark as read unless `mark_read=true`; body truncated (default 20k chars) |
+| `read_message` | `mcp:mail/read` | `BODY.PEEK`: does **not** mark as read unless `mark_read=true`; body truncated (default 20k chars); fetches BODYSTRUCTURE, the header and a prefix of the one text part, never attachments |
+| `get_message_info` | `mcp:mail/read` | headers, flags, size, attachment list from BODYSTRUCTURE; no body is fetched |
 | `send_message` | `mcp:mail/send` | plain text, From is always the authenticated user, optional reply threading |
 
 - **Per-tool scopes, no global scope requirement**, so `whoami` stays
@@ -310,6 +311,21 @@ testing" settings tend to survive into production.
   shouldn't make messages look read to the human.
 - **Sender can't be chosen.** It's the token's claim (D7), which also lines
   up with Postfix's `reject_sender_login_mismatch`.
+- **Recipients are exactly what was given.** Addresses are parsed once into
+  `Address` objects; the header and the SMTP envelope are both built from
+  those. A display name such as `"Boss, evil@example.org"` stays a name
+  (before 0.5 it became a recipient of its own and replaced the real one).
+- **Mail content is untrusted input to the model.** A message can contain
+  instructions aimed at the assistant (prompt injection), and `send_message`
+  is the way out. The mitigations are outside this server's reach as much as
+  in it: give `mcp:mail/send` only to users who need it (a token without it
+  doesn't even list the tool), and keep the confirmation step in the client.
+  Threading headers taken from a received message are reduced to
+  well-formed `<message-id>`s, its subject to one line.
+- **Reading never downloads attachments.** `read_message` asks for the
+  BODYSTRUCTURE and fetches only a prefix of the text part it shows, sized
+  from `max_chars`. A message with a 50 MB attachment costs a few kilobytes,
+  not 50 MB of memory per call. `get_message_info` skips the text part too.
 - **Errors are MCP tool errors** (`isError: true`) with an actionable message,
   not success-shaped `{"status": ...}` payloads as in the predecessor. Clients
   and models treat them as failures.
@@ -683,6 +699,34 @@ Keycloak 26.8.1 and Dovecot 2.4.1. Beyond the shared checks, it asserts:
 - The exchanged token is issued to `mcp-mail`, for `dovecot`, with scope
   `mail`, for the same user.
 - Logout invalidates the cached exchanged token.
+
+---
+
+## D24. The mailbox address must be verified
+
+**Context.** The mailbox is the token's `email` claim (D7), here and in
+Dovecot (`username_attribute`). In Keycloak that's a profile attribute, and
+the default user profile lets users edit it themselves (account console).
+Keycloak refuses duplicates, so nobody can take an address another user
+already has, but an address no Keycloak user holds yet (`info@`,
+`postmaster@`, a colleague who hasn't logged in) is free to claim.
+
+**Decision.**
+- The server refuses tokens whose `email_verified` isn't `true` when
+  `MAIL_USERNAME_CLAIM=email` (`MAIL_REQUIRE_EMAIL_VERIFIED=on`, the
+  default). `whoami` still works and shows `email_verified`;
+  `mcp-mail-diagnose` reports it.
+- The Keycloak side is the real fix, because in the forwarded-token variant
+  a user holding a token can go to Dovecot directly, which can't check
+  `email_verified`: make `email` editable by admins only
+  ([keycloak.md](keycloak.md#users-cant-change-their-own-address)).
+  With token exchange (D23), only this server holds mail tokens, so the
+  server-side check alone already closes it.
+
+**Why on by default.** A wrong mailbox is the worst failure this server can
+have. Admin-created users show `email_verified: false` unless the admin set
+*Email verified*; the error message says exactly that. Turn it off only if
+every address in the realm is admin-managed (e.g. LDAP-federated, read-only).
 
 [owui-19820]: https://github.com/open-webui/open-webui/discussions/19820
 [owui-28319]: https://github.com/open-webui/open-webui/issues/28319

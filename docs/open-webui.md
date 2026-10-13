@@ -56,6 +56,11 @@ consent click. Don't pick "Bearer" or "Session" either: those send a static
 key or Open WebUI's own session token, neither of which Keycloak or Dovecot
 can validate.
 
+**Sending mail.** Mail the assistant reads may contain instructions aimed at
+it. Give the `mcp:mail/send` scope only to users who need to send, and keep
+Open WebUI's tool-call confirmation on if your version offers it: the tool
+description asks the model to confirm, but nothing enforces that.
+
 In resource mode no browser ever talks to this server, so the URL may be an
 internal one (e.g. `http://mcp-mail:8000/mcp` in the same compose network).
 `BASE_URL` should still be the URL clients use, because it appears in the

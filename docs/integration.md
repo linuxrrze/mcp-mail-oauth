@@ -159,7 +159,7 @@ curl -L <repo>/.env.example -o .env
 Set the image and Open WebUI's network, then start:
 
 ```bash
-export MCP_MAIL_IMAGE=ghcr.io/linuxrrze/mcp-mail-oauth:0.4   # the default; override for another registry
+export MCP_MAIL_IMAGE=ghcr.io/linuxrrze/mcp-mail-oauth:0.5   # the default; override for another registry
 export OPENWEBUI_NETWORK=$(docker inspect open-webui -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')
 docker compose -f docker-compose.existing-stack.yml up -d
 docker compose -f docker-compose.existing-stack.yml logs mcp-mail | head

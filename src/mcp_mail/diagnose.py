@@ -52,7 +52,8 @@ def _aud_list(claims: dict) -> list[str]:
     return [aud] if isinstance(aud, str) else list(aud)
 
 
-def check_claims(claims: dict, *, issuer: str, audience: str, username_claim: str, introspect_client: str | None) -> list[str]:
+def check_claims(claims: dict, *, issuer: str, audience: str, username_claim: str, introspect_client: str | None,
+                 require_email_verified: bool = True) -> list[str]:
     """Return a list of failure messages (empty = everything this server checks passes)."""
     failures: list[str] = []
     auds = _aud_list(claims)
@@ -80,6 +81,9 @@ def check_claims(claims: dict, *, issuer: str, audience: str, username_claim: st
         )
     if not claims.get(username_claim):
         failures.append(f"no {username_claim!r} claim (MAIL_USERNAME_CLAIM): no mailbox can be derived.")
+    elif username_claim == "email" and require_email_verified and claims.get("email_verified") is not True:
+        failures.append("email_verified is not true: the server refuses unverified addresses "
+                        "(Keycloak: Users > user > Email verified; or MAIL_REQUIRE_EMAIL_VERIFIED=off).")
     exp = claims.get("exp")
     if exp and exp < time.time():
         failures.append(f"token expired {int(time.time() - exp)}s ago.")
@@ -159,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         username_claim=settings.mail.username_claim,
         # With exchange, the incoming token is deliberately not a mail credential.
         introspect_client=None if settings.token_exchange else args.introspect_client_id,
+        require_email_verified=settings.mail.require_email_verified,
     )
     for failure in failures:
         print(f"{FAIL} {failure}")

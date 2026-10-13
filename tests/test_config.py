@@ -14,6 +14,8 @@ def test_defaults():
     assert s.mail.sasl_mechanism == "XOAUTH2"
     assert s.mail.username_claim == "email"
     assert s.mail.sent_folder == "Sent"
+    assert s.mail.require_email_verified is True
+    assert load({**BASE_ENV, "MAIL_REQUIRE_EMAIL_VERIFIED": "off"}).mail.require_email_verified is False
 
 
 def test_trailing_slashes_are_normalized():

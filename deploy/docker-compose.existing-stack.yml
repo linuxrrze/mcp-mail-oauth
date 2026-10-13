@@ -11,7 +11,7 @@ name: mcp-mail-oauth
 services:
   mcp-mail:
     # Pin a minor line: X.Y receives patch releases, never breaking changes.
-    image: ${MCP_MAIL_IMAGE:-ghcr.io/linuxrrze/mcp-mail-oauth:0.4}
+    image: ${MCP_MAIL_IMAGE:-ghcr.io/linuxrrze/mcp-mail-oauth:0.5}
     container_name: mcp-mail
     env_file: .env
     restart: unless-stopped

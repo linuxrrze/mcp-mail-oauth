@@ -127,7 +127,7 @@ async def test_handshake_era_clients(client, make_token, version):
 async def test_tools_follow_scopes(client, make_token):
     assert await tool_names(client, make_token(scopes=["openid", "email"])) == {"whoami"}
     assert await tool_names(client, make_token(scopes=["mcp:mail/read"])) == {
-        "whoami", "list_folders", "list_messages", "search_messages", "read_message",
+        "whoami", "list_folders", "list_messages", "search_messages", "read_message", "get_message_info",
     }
     assert "send_message" in await tool_names(client, make_token())
 
@@ -193,6 +193,29 @@ async def test_missing_username_claim_is_a_clear_tool_error(client, make_token):
     result = await call(client, make_token(email=None), "list_folders")
     assert result["isError"]
     assert "'email' claim" in result["content"][0]["text"]
+
+
+@pytest.mark.parametrize("verified", [False, None])
+async def test_unverified_email_selects_no_mailbox(client, make_token, monkeypatch, verified):
+    monkeypatch.setattr(mail, "list_folders", lambda *a, **k: pytest.fail("must not be called"))
+    result = await call(client, make_token(email_verified=verified), "list_folders")
+    assert result["isError"]
+    assert "not verified" in result["content"][0]["text"]
+    who = await call(client, make_token(email_verified=verified), "whoami")
+    assert who["structuredContent"]["email_verified"] == verified
+
+
+async def test_unverified_email_allowed_when_switched_off(settings, keypair, make_token, monkeypatch):
+    monkeypatch.setattr(mail, "list_folders", lambda cfg, username, token: [{"name": "INBOX", "flags": []}])
+    import dataclasses
+    relaxed = dataclasses.replace(settings, mail=dataclasses.replace(settings.mail, require_email_verified=False))
+    verifier = auth_module.build_token_verifier(relaxed, public_key=keypair.public_key)
+    app = create_server(relaxed, auth=auth_module.build_auth(relaxed, verifier)).http_app(
+        path="/mcp", stateless_http=True, json_response=True)
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="https://x") as c:
+            resp = await rpc(c, make_token(email_verified=False), "tools/call", {"name": "list_folders", "arguments": {}})
+    assert not resp.json()["result"].get("isError"), resp.text
 
 
 async def test_mail_server_rejection_becomes_tool_error_with_hint(client, make_token, monkeypatch):
