@@ -36,10 +36,13 @@ def make_token(keypair):
         email="alice@example.com",
         issuer=ISSUER,
         expires_in=300,
+        email_verified=True,
     ):
         claims = {"azp": "openwebui"}
         if email is not None:
             claims["email"] = email
+        if email_verified is not None:
+            claims["email_verified"] = email_verified
         return keypair.create_token(
             subject="user-alice",
             issuer=issuer,

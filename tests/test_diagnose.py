@@ -6,7 +6,7 @@ from .conftest import ISSUER
 
 GOOD = {
     "iss": ISSUER, "aud": ["mcp-mail", "dovecot"], "azp": "openwebui",
-    "scope": "openid email mail mcp:mail/read mcp:mail/send", "email": "alice@example.com",
+    "scope": "openid email mail mcp:mail/read mcp:mail/send", "email": "alice@example.com", "email_verified": True,
     "exp": time.time() + 300,
 }
 
@@ -27,6 +27,7 @@ def test_each_rule_is_reported_with_its_fix():
     assert "'email' claim" in check(email=None)[0]
     assert "OIDC_ISSUER" in check(iss="https://other.example")[0]
     assert "expired" in check(exp=time.time() - 10)[0]
+    assert "email_verified" in check(email_verified=False)[0]
 
 
 def test_decode_claims_reads_jwt_payload(make_token):
