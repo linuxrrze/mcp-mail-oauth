@@ -21,6 +21,15 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
+    # /healthz needs no token and touches neither Keycloak nor the mail
+    # server: it says the process serves HTTP. Overrides the image's check so
+    # a changed PORT is honoured. The image has no curl; Python it has.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('PORT', '8000'), timeout=4).status != 200)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   mcp-mail-data:

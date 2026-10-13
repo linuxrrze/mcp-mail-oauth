@@ -1,6 +1,7 @@
 # Test, scan, version and publish the mcp-mail-oauth image.
 #
-#   pull request -> tests + repo scan + image build/scan/smoke test (nothing published)
+#   pull request -> tests + repo scan + integration stack + image build/scan/smoke test
+#                   (nothing published)
 #   push to main -> the same, then: push image, tag vX.Y.Z, create release
 #
 # Publishing happens only after every gate passed, and it pushes the very
@@ -64,7 +65,6 @@ jobs:
       - name: Check deploy files
         if: matrix.python == '3.12'
         run: |
-          python -m json.tool deploy/keycloak/realm-mail.json > /dev/null
           bash -n deploy/keycloak/setup-kcadm.sh
 
   scan-repo:
@@ -85,6 +85,33 @@ jobs:
           exit-code: "1"
           trivyignores: .trivyignore
 
+  # The real chain against the deploy/ files: Keycloak tokens, MCP server,
+  # Dovecot oauth2 introspection (2.3 and 2.4), Postfix SASL, LMTP delivery.
+  integration:
+    name: Integration (Dovecot ${{ matrix.dovecot }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2.3 = 2.3.21.1. Dovecot 2.3.19 is known not to work (docs/mail-server.md).
+        dovecot: ["2.3", "2.4"]
+    env:
+      DOVECOT: ${{ matrix.dovecot }}
+      COMPOSE: docker compose -f test-stack/docker-compose.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        run: $COMPOSE build
+      # `run` starts the stack and waits for its healthchecks first.
+      - name: End-to-end checks
+        run: $COMPOSE run --rm e2e
+      - name: Logs
+        if: always()
+        run: $COMPOSE logs --no-color --tail 200 keycloak mail mcp-mail
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v
+
   version:
     name: Next version
     runs-on: ubuntu-latest
@@ -101,7 +128,7 @@ jobs:
 
   image:
     name: Build, scan, publish
-    needs: [test, scan-repo, version]
+    needs: [test, scan-repo, integration, version]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the vX.Y.Z tag and release

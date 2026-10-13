@@ -10,3 +10,4 @@ deploy
 scripts
 .github
 .trivyignore
+test-stack

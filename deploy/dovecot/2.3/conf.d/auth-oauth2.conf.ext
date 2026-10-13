@@ -1,4 +1,6 @@
 # Dovecot 2.3: accept Keycloak access tokens via XOAUTH2 / OAUTHBEARER.
+# Needs Dovecot 2.3.21 or later; 2.3.19 rejects Keycloak's introspection
+# answer (docs/mail-server.md, Versions).
 # Include from conf.d/10-auth.conf:   !include auth-oauth2.conf.ext
 #
 # This adds a passdb only. Keep your existing userdb (passwd, sql, ldap, static

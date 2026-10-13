@@ -15,6 +15,15 @@ services:
     container_name: mcp-mail
     env_file: .env
     restart: unless-stopped
+    # /healthz needs no token and touches neither Keycloak nor the mail
+    # server: it says the process serves HTTP. Overrides the image's check so
+    # a changed PORT is honoured. The image has no curl; Python it has.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('PORT', '8000'), timeout=4).status != 200)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # No published port: only Open WebUI talks to this server, over the shared
     # Docker network, at http://mcp-mail:8000/mcp. Publish 8000 (behind a TLS
     # reverse proxy) only for AUTH_MODE=proxy or for clients outside Docker.

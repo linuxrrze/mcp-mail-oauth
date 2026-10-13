@@ -1,0 +1,23 @@
+# Postfix main.cf for the test stack. deploy/postfix/main.cf.snippet is
+# appended to this file at build time.
+compatibility_level = 3.6
+myhostname = mail.example.com
+mydomain = example.com
+myorigin = $mydomain
+mydestination = example.com, mail.example.com, localhost
+inet_interfaces = all
+inet_protocols = ipv4
+mynetworks = 127.0.0.0/8
+maillog_file = /dev/stdout
+
+# Local mail goes to Dovecot over LMTP. Any local address is accepted; the
+# Dovecot userdb (static) creates mailboxes on first delivery.
+local_transport = lmtp:unix:private/dovecot-lmtp
+local_recipient_maps =
+alias_maps =
+alias_database =
+
+smtpd_tls_cert_file = /certs/mail.crt
+smtpd_tls_key_file = /certs/mail.key
+smtpd_tls_security_level = may
+smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination

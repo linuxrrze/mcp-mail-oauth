@@ -200,8 +200,8 @@ from one place.
 
 **Consequences.** Adding another client that may reach the mailbox is one
 scope assignment. `deploy/keycloak/setup-kcadm.sh` does all of this
-idempotently on an existing realm, and `deploy/keycloak/realm-mail.json` is
-an importable test realm.
+idempotently on an existing realm. The test stack (D22) runs that script
+against a fresh realm on every CI run.
 
 ---
 
@@ -555,6 +555,58 @@ calls (OIDC discovery, `mcp-mail-diagnose`) use `httpx2` instead of `httpx`.
 - The `httpx`/`httpcore` loggers are now named `httpx2`/`httpcore2`.
 - The minor version goes up (0.2.0), so deployments pinned to the `0.1` image
   tag only get this when they change the tag.
+
+---
+
+## D22. A disposable stack tests the deploy files end to end
+
+**Decision.** `test-stack/` runs Keycloak, Postfix + Dovecot and this server
+in Docker, and `test-stack/e2e.py` drives the whole chain:
+- Keycloak tokens and their audience and scopes.
+- Keycloak introspection as the `dovecot` client.
+- The MCP tools.
+- IMAP with XOAUTH2 and OAUTHBEARER.
+- SMTP submission, LMTP delivery to another user, and the Sent copy.
+- Postfix refusing a forged sender.
+- Dovecot rejecting a token after logout.
+
+CI runs it for Dovecot 2.3 and 2.4 and publishes only if it passes.
+
+**Why.**
+- The unit tests replace IMAP/SMTP. What breaks real deployments is the
+  configuration between the parts, and that existed only as documentation:
+  the 2.4 config was marked untested, and nothing had ever run
+  `setup-kcadm.sh`.
+- **It uses the files users copy.** The mail image is built from
+  `deploy/dovecot` and `deploy/postfix` with only the placeholders replaced,
+  and Keycloak is configured by `deploy/keycloak/setup-kcadm.sh`, run twice
+  to check it's idempotent.
+- **It starts from a realm like the user's.** The imported realm contains
+  only Open WebUI's client and users. Keycloak creates its built-in scopes
+  as in any real realm, and the script adds the rest.
+- Debian packages instead of custom builds, so the versions are the ones
+  people run.
+
+**What it found.**
+- The former `deploy/keycloak/realm-mail.json` didn't work. A realm import
+  that lists `clientScopes` gets only those, so Keycloak's built-in `basic`,
+  `email`, `profile` and `offline_access` scopes were missing, and
+  Keycloak refused Open WebUI's scope request (`invalid_scope`). The file is
+  removed; the test stack replaces it.
+- Dovecot 2.3.19.1 (Debian 12's package) rejects every Keycloak token with
+  "No username returned". 2.3.21.1 and 2.4.1 accept the identical
+  introspection answer. The docs state 2.3.21 as the minimum for 2.3.
+- The 2.4 config (`deploy/dovecot/2.4/oauth2.conf`) works as written with
+  2.4.1.
+
+**Consequences.**
+- CI gets slower by a few minutes: the two stacks run in parallel with the
+  other gates.
+- The stack uses test-only shortcuts, all listed in `test-stack/README.md`:
+  - password grant on the `openwebui` client;
+  - fixed secrets;
+  - a throwaway CA;
+  - plain HTTP to Keycloak inside the Docker network.
 
 [owui-19820]: https://github.com/open-webui/open-webui/discussions/19820
 [owui-28319]: https://github.com/open-webui/open-webui/issues/28319

@@ -28,16 +28,12 @@ client secret for Dovecot's `introspection_url`. Variables: `REALM`
 (`dovecot`), `MCP_AUDIENCE` (`mcp-mail`, must match the server's
 `MCP_AUDIENCE`).
 
-## Option B: test realm import
+## Option B: disposable test stack
 
-`deploy/keycloak/realm-mail.json` is a complete throwaway realm: the three
-clients, the scopes, and user `alice` / `alice` (`alice@example.com`). The
-secrets in it are test values.
-
-```bash
-docker run --rm -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
-  -v "$PWD/deploy/keycloak:/opt/keycloak/data/import:ro" quay.io/keycloak/keycloak:26.6 start-dev --import-realm
-```
+[`test-stack/`](../test-stack/README.md) starts a throwaway Keycloak with
+Postfix, Dovecot and this server, and configures the realm with the Option A
+script. Use it to try the setup, or to see a working configuration next to
+yours.
 
 ## Option C: by hand (admin console)
 
