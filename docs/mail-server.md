@@ -68,6 +68,19 @@ openssl s_client -starttls smtp -connect mail.example.com:587 -quiet <<< "EHLO t
 This server sends the token as a SASL continuation, not inline on the `AUTH`
 line, because a 2-4 KB token would exceed command-line limits (D11).
 
+## Folders and IMAP extensions
+
+- **Drafts and Trash** are found by their RFC 6154 special-use flag
+  (`\Drafts`, `\Trash`), whatever their name. Dovecot sets it with
+  `special_use` in the mailbox config, as most default configs already do.
+  Without the flag the server uses `Drafts` / `Trash`, or
+  `MAIL_DRAFTS_FOLDER` / `MAIL_TRASH_FOLDER`. The Sent folder is
+  `MAIL_SENT_FOLDER`.
+- **Moving** (`move_messages`, `trash_messages`) uses `MOVE` (RFC 6851), or
+  `COPY` plus a UID-restricted `EXPUNGE` (UIDPLUS). Dovecot has both. A
+  server with neither gets an error rather than a plain `EXPUNGE`, which
+  would also remove other messages marked deleted.
+
 ## TLS
 
 This server requires TLS for both IMAP and SMTP, and verifies certificates

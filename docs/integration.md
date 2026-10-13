@@ -88,7 +88,7 @@ Note the printed `dovecot` client secret.
 **Check:** *Clients → (Open WebUI client) → Client scopes → Evaluate*, pick a
 real user, open *Generated access token*:
 - `aud` contains `mcp-mail` **and** `dovecot`.
-- `scope` contains `mail mcp:mail/read mcp:mail/send`.
+- `scope` contains `mail mcp:mail/read mcp:mail/send mcp:mail/draft mcp:mail/organize` (minus any tool scope you withhold, keycloak.md, Tool scopes).
 - `email` is set.
 
 ### 1b. Token exchange
@@ -102,7 +102,7 @@ Note both printed secrets: `mcp-mail` (for the container, step 3b) and
 
 **Check:** the same *Evaluate* view:
 - `aud` contains `mcp-mail` but **not** `dovecot`.
-- `scope` contains `mcp:mail/read mcp:mail/send` but **not** `mail`.
+- `scope` contains `mcp:mail/read mcp:mail/send mcp:mail/draft mcp:mail/organize` (minus any you withhold) but **not** `mail`.
 - `email` is set.
 
 ### Both

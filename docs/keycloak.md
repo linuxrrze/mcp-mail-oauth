@@ -11,7 +11,7 @@ Reasons: [decisions.md](decisions.md) D4, D5, D6, D23.
 |---|---|---|
 | `mail` | client scope, **in token scope** | Dovecot requires `scope = mail` |
 | └ audience `dovecot` | audience mapper, *included client audience* | Keycloak 26.6.2+ returns `active: false` to an introspecting client that isn't in `aud` |
-| `mcp:mail/read`, `mcp:mail/send` | client scopes, in token scope | per-tool permissions |
+| `mcp:mail/read`, `mcp:mail/send`, `mcp:mail/draft`, `mcp:mail/organize` | client scopes, in token scope | per-tool permissions ([which tools](#tool-scopes)) |
 | `dovecot` | confidential client, **every flow off** | credentials for Dovecot's introspection calls, nothing else |
 
 Make sure each audience mapper has *Add to access token* and *Add to token
@@ -25,7 +25,7 @@ and Open WebUI doesn't request them.
 | Object | Setting |
 |---|---|
 | `mail` | **also** an audience mapper `mcp-mail` (*included custom audience*, = the server's `MCP_AUDIENCE`) |
-| Open WebUI's client | Default scopes `mail`, `mcp:mail/read`, `mcp:mail/send` |
+| Open WebUI's client | Default scopes `mail` and the `mcp:mail/*` scopes you grant |
 
 **Script** (idempotent, skips what exists, prints the `dovecot` secret):
 
@@ -43,19 +43,19 @@ server's `MCP_AUDIENCE`).
    *Mappers → By configuration → Audience*, twice:
    `audience-mcp-mail` with *Included Custom Audience* `mcp-mail`, and
    `audience-dovecot` with *Included Client Audience* `dovecot`.
-2. *Client scopes → Create* `mcp:mail/read` and `mcp:mail/send`, *Include in
-   token scope* on.
+2. *Client scopes → Create* `mcp:mail/read`, `mcp:mail/send`,
+   `mcp:mail/draft` and `mcp:mail/organize`, *Include in token scope* on.
 3. *Clients → Create* `dovecot`, *Client authentication* on, every flow
    unticked. Copy the secret from *Credentials*.
-4. *Clients → openwebui → Client scopes → Add client scope*: `mail`,
-   `mcp:mail/read`, `mcp:mail/send`, each **Default**.
+4. *Clients → openwebui → Client scopes → Add client scope*: `mail` and
+   the `mcp:mail/*` scopes, each **Default**.
 
 **Check:** *Clients → openwebui → Client scopes → Evaluate*, pick a user,
 *Generated access token*:
 
 ```json
 "aud": ["mcp-mail", "dovecot"],
-"scope": "openid email profile mail mcp:mail/read mcp:mail/send",
+"scope": "openid email profile mail mcp:mail/read mcp:mail/send mcp:mail/draft mcp:mail/organize",
 "email": "alice@example.com"
 ```
 
@@ -66,8 +66,8 @@ Needs Keycloak 26.2+ (standard token exchange).
 | Object | Setting |
 |---|---|
 | `mail` | only the `dovecot` audience mapper is needed |
-| `mcp:mail/read`, `mcp:mail/send` | **each** an audience mapper `mcp-mail` (*included custom audience*) |
-| Open WebUI's client | Default scopes `mcp:mail/read`, `mcp:mail/send`, **not** `mail` |
+| the `mcp:mail/*` scopes | **each** an audience mapper `mcp-mail` (*included custom audience*) |
+| Open WebUI's client | Default scopes `mcp:mail/*`, **not** `mail` |
 | `mcp-mail` | confidential client, *Standard token exchange* on, Default scope `mail`. Its client ID must equal the server's `MCP_AUDIENCE`: Keycloak only exchanges tokens whose `aud` names the exchanging client |
 
 **Script** (idempotent; removes `mail` from Open WebUI's client; prints the
@@ -84,19 +84,19 @@ does no harm, because only `mcp-mail` gets `mail` now.
 **By hand** (admin console):
 1. Steps 1 to 3 of the default setup (the `mcp-mail` mapper on `mail` is
    optional).
-2. On `mcp:mail/read` and on `mcp:mail/send`: *Mappers → By configuration →
-   Audience*, `audience-mcp-mail`, *Included Custom Audience* `mcp-mail`.
+2. On each `mcp:mail/*` scope: *Mappers → By configuration → Audience*,
+   `audience-mcp-mail`, *Included Custom Audience* `mcp-mail`.
 3. *Clients → Create* `mcp-mail`, *Client authentication* on, every flow
    unticked except **Standard Token Exchange**. Copy the secret. *Client
    scopes → Add client scope* `mail` as **Default**.
-4. *Clients → openwebui → Client scopes*: `mcp:mail/read`, `mcp:mail/send`
-   as **Default**. **Remove `mail`** if it is assigned.
+4. *Clients → openwebui → Client scopes*: the `mcp:mail/*` scopes as
+   **Default**. **Remove `mail`** if it is assigned.
 
 **Check:** the same *Evaluate* view for `openwebui`:
 
 ```json
 "aud": "mcp-mail",
-"scope": "openid email profile mcp:mail/read mcp:mail/send",
+"scope": "openid email profile mcp:mail/read mcp:mail/send mcp:mail/draft mcp:mail/organize",
 "email": "alice@example.com"
 ```
 
@@ -106,6 +106,24 @@ opens the mailbox directly, and the exchange gains nothing.
 Then configure the server: `MAIL_TOKEN_EXCHANGE=on`, `OIDC_CLIENT_ID=mcp-mail`,
 `OIDC_CLIENT_SECRET` ([mail-credential.md](mail-credential.md#token-exchange)).
 To switch between the two: [mail-credential.md](mail-credential.md#switching).
+
+## Tool scopes
+
+Each scope unlocks a group of tools; a token without it doesn't even list
+them. `setup-kcadm.sh` assigns all four. To withhold one, remove it from the
+client's Default scopes (*Clients → openwebui → Client scopes*); users then
+log in again.
+
+| Scope | Tools | Grant to |
+|---|---|---|
+| `mcp:mail/read` | `list_folders`, `list_messages`, `search_messages`, `read_message`, `get_message_info`, `get_thread`, `get_attachment`, `folder_status` | everyone (needed for anything useful) |
+| `mcp:mail/send` | `send_message` (incl. reply-all), `forward_message` | users who want the assistant to send |
+| `mcp:mail/draft` | `save_draft` | everyone: the user sends drafts from their mail client, so nothing leaves without them |
+| `mcp:mail/organize` | `set_flags`, `move_messages`, `trash_messages` | users who want the assistant to file mail; nothing is ever deleted permanently |
+
+Keycloak scopes apply per client, not per user. To grant `send` to some
+users only, use a second Open WebUI client or Keycloak's client-scope
+policies.
 
 ## Users can't change their own address
 
@@ -153,8 +171,8 @@ flow with Dynamic Client Registration (Claude Desktop, MCP Inspector, Open
 WebUI's "OAuth 2.1" type).
 
 1. A confidential client `mcp-mail` with Standard flow, redirect URI
-   `<BASE_URL>/auth/callback`, and the scopes `mail`, `mcp:mail/read`,
-   `mcp:mail/send` as Default. Or: `setup-kcadm.sh --proxy https://mcp-mail.example.com`,
+   `<BASE_URL>/auth/callback`, and the scopes `mail` and `mcp:mail/*` as
+   Default. Or: `setup-kcadm.sh --proxy https://mcp-mail.example.com`,
    combinable with `--exchange` (one `mcp-mail` client then does both).
 2. Set `AUTH_MODE=proxy`, `OIDC_CLIENT_ID=mcp-mail`, `OIDC_CLIENT_SECRET`,
    and a long random `JWT_SIGNING_KEY` (D13). Keep the `/data` volume.

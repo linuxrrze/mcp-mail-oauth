@@ -298,17 +298,29 @@ testing" settings tend to survive into production.
 | `search_messages` | `mcp:mail/read` | server-side IMAP SEARCH; UTF-8 search terms supported |
 | `read_message` | `mcp:mail/read` | `BODY.PEEK`: does **not** mark as read unless `mark_read=true`; body truncated (default 20k chars); fetches BODYSTRUCTURE, the header and a prefix of the one text part, never attachments |
 | `get_message_info` | `mcp:mail/read` | headers, flags, size, attachment list from BODYSTRUCTURE; no body is fetched |
-| `send_message` | `mcp:mail/send` | plain text, From is always the authenticated user, optional reply threading |
+| `get_thread` | `mcp:mail/read` | Message-ID/References/In-Reply-To search in the folder and Sent; no THREAD extension needed |
+| `get_attachment` | `mcp:mail/read` | text, HTML, PDF (pypdf), message/rfc822, images (as image content); other types refused; ≤ `MAIL_MAX_ATTACHMENT_BYTES` |
+| `folder_status` | `mcp:mail/read` | IMAP STATUS (MESSAGES UNSEEN) |
+| `send_message` | `mcp:mail/send` | plain text, From is always the authenticated user, optional reply / reply-all threading |
+| `forward_message` | `mcp:mail/send` | original attached verbatim as message/rfc822; ≤ `MAIL_MAX_FORWARD_BYTES` |
+| `save_draft` | `mcp:mail/draft` | APPEND to the `\Drafts` folder with `\Draft` |
+| `set_flags` | `mcp:mail/organize` | `\Seen`, `\Flagged` |
+| `move_messages` | `mcp:mail/organize` | MOVE, or COPY + UID EXPUNGE |
+| `trash_messages` | `mcp:mail/organize` | move to the `\Trash` folder; never expunges |
 
 - **Per-tool scopes, no global scope requirement**, so `whoami` stays
   reachable. Missing scopes were the predecessor's most confusing failure
   ("Tools: []"), and this makes them self-diagnosing.
-- **No delete, move or flag tools.** Irreversible changes driven by a
-  language model are the riskiest thing a mail tool can offer. Reading and
-  sending cover the use case. Sending is the one consequential action, and
-  the tool description tells the model to confirm with the user first.
+- **Nothing irreversible.** Irreversible changes driven by a language model
+  are the riskiest thing a mail tool can offer. Organizing (D25) is limited
+  to what the user can undo: flags, moving, moving to Trash. There is no
+  expunge and no permanent delete. Sending is the one consequential action,
+  and the tool descriptions tell the model to confirm with the user first.
+- **Scopes follow consequence** (D25): read, send, draft, organize.
+  `mcp:mail/draft` lets an admin offer composing without sending.
 - **Reading doesn't change state.** An assistant skimming the inbox
-  shouldn't make messages look read to the human.
+  shouldn't make messages look read to the human. Changing flags is an
+  explicit `set_flags` call (or `read_message(mark_read=true)`).
 - **Sender can't be chosen.** It's the token's claim (D7), which also lines
   up with Postfix's `reject_sender_login_mismatch`.
 - **Recipients are exactly what was given.** Addresses are parsed once into
@@ -727,6 +739,62 @@ already has, but an address no Keycloak user holds yet (`info@`,
 have. Admin-created users show `email_verified: false` unless the admin set
 *Email verified*; the error message says exactly that. Turn it off only if
 every address in the realm is admin-managed (e.g. LDAP-federated, read-only).
+
+---
+
+## D25. More tools, grouped into scopes by consequence
+
+**Context.** A survey of eight published mail MCP servers (IMAP, Gmail,
+Microsoft Graph, JMAP; October 2026) showed what users expect beyond reading
+and sending: threads, attachment content, unread counts, drafts,
+reply-all, forwarding, flags, moving, deleting.
+
+**Decision.** All of them over plain IMAP/SMTP, with two new scopes:
+
+| Scope | Adds | Consequence |
+|---|---|---|
+| `mcp:mail/read` | `get_thread`, `get_attachment`, `folder_status` | none |
+| `mcp:mail/send` | `forward_message`, reply-all in `send_message` | mail leaves the mailbox |
+| `mcp:mail/draft` (new) | `save_draft` | a draft the user still has to send |
+| `mcp:mail/organize` (new) | `set_flags`, `move_messages`, `trash_messages` | reversible changes |
+
+- **Draft as a scope of its own.** It is the safe alternative to sending
+  (Google's official Gmail server only drafts): an admin can withhold
+  `send` and still let the assistant write.
+- **Trash, not delete.** `trash_messages` moves to the `\Trash` folder and
+  refuses to act on Trash itself. Expunging is not offered (D10). Moving
+  uses MOVE or COPY + UID EXPUNGE, never a plain EXPUNGE, which would also
+  remove other messages already marked `\Deleted`.
+- **Folders by special-use flag.** Drafts and Trash are found by `\Drafts` /
+  `\Trash` (RFC 6154), since their names vary by language and client
+  (`Entwürfe`, `Papierkorb`, `Deleted Items`). The test stack uses German
+  names to prove it.
+- **Reply-all** derives recipients from the original's Reply-To/From, To and
+  Cc, minus the user's own address. Those come from someone else's mail, so
+  the results list who a message went to, and display names are decoded
+  after splitting (a decoded "Müller, Hans" stays one address).
+- **Forwarding attaches the original verbatim** as message/rfc822, headers
+  not refolded, so DKIM signatures and attachments survive. Nothing of it
+  passes through the model.
+- **Attachments are read, not dumped.** Text, HTML, PDF text and attached
+  messages come back as text, images as MCP image content. Other types are
+  refused instead of returned as base64, which would only flood the
+  model's context. PDFs are read with pypdf (pure Python), at most 100
+  pages, after the size check.
+- **Threads without the THREAD extension.** One SEARCH per folder for the
+  ancestors' Message-IDs and for messages referring to the thread root or
+  this message, in the folder and Sent, so the user's own replies show.
+
+**Not offered** (the survey's other features): permanent delete and bulk
+delete (D10), folder create/rename/delete, server-side filters (needs
+ManageSieve), raw IMAP commands, multiple accounts (doesn't fit per-user
+OAuth), scheduled send and templates (need server-side state), HTML and
+attachments in new mail.
+
+**Verified** by unit tests against a fake IMAP server and by the test stack
+against Dovecot 2.3 and 2.4: reply-all, thread order across INBOX and Sent,
+drafts in `Entwürfe`, a 4 MB message forwarded and read back as an
+attachment, flags, moving to Archive, trash into `Papierkorb`.
 
 [owui-19820]: https://github.com/open-webui/open-webui/discussions/19820
 [owui-28319]: https://github.com/open-webui/open-webui/issues/28319

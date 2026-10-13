@@ -77,7 +77,7 @@ async def test_protected_resource_metadata_names_keycloak(client, settings):
     body = resp.json()
     assert body["resource"] == "https://mcp-mail.example.com/mcp"
     assert body["authorization_servers"] == [settings.oidc_issuer]
-    assert set(body["scopes_supported"]) == {"mcp:mail/read", "mcp:mail/send"}
+    assert set(body["scopes_supported"]) == {"mcp:mail/read", "mcp:mail/send", "mcp:mail/draft", "mcp:mail/organize"}
 
 
 @pytest.mark.parametrize("override", [
@@ -126,10 +126,28 @@ async def test_handshake_era_clients(client, make_token, version):
 
 async def test_tools_follow_scopes(client, make_token):
     assert await tool_names(client, make_token(scopes=["openid", "email"])) == {"whoami"}
-    assert await tool_names(client, make_token(scopes=["mcp:mail/read"])) == {
-        "whoami", "list_folders", "list_messages", "search_messages", "read_message", "get_message_info",
-    }
-    assert "send_message" in await tool_names(client, make_token())
+    read = {"whoami", "list_folders", "list_messages", "search_messages", "read_message", "get_message_info",
+            "get_thread", "get_attachment", "folder_status"}
+    assert await tool_names(client, make_token(scopes=["mcp:mail/read"])) == read
+    assert await tool_names(client, make_token(scopes=["mcp:mail/send"])) == {"whoami", "send_message", "forward_message"}
+    assert await tool_names(client, make_token(scopes=["mcp:mail/draft"])) == {"whoami", "save_draft"}
+    assert await tool_names(client, make_token(scopes=["mcp:mail/organize"])) == {
+        "whoami", "set_flags", "move_messages", "trash_messages"}
+    assert await tool_names(client, make_token()) == read | {"send_message", "forward_message"}
+
+
+async def test_get_attachment_returns_an_image_as_image_content(client, make_token, monkeypatch):
+    def fake(cfg, username, token, folder, uid, index, max_chars):
+        return {"uid": uid, "folder": folder, "index": index, "filename": "a.png", "content_type": "image/png",
+                "size": 4, "image": b"\x89PNG"}
+
+    monkeypatch.setattr(mail, "get_attachment", fake)
+    result = await call(client, make_token(), "get_attachment", {"uid": "7", "index": 1})
+    assert not result.get("isError"), result
+    kinds = [c["type"] for c in result["content"]]
+    assert kinds == ["text", "image"]
+    assert result["content"][1]["mimeType"] == "image/png"
+    assert result["structuredContent"]["filename"] == "a.png" and "image" not in result["structuredContent"]
 
 
 async def test_whoami_explains_missing_scopes(client, make_token):
@@ -137,7 +155,7 @@ async def test_whoami_explains_missing_scopes(client, make_token):
     data = result["structuredContent"]
     assert data["mailbox"] == "alice@example.com"
     assert data["client"] == "openwebui"
-    assert data["missing_scopes"] == ["mcp:mail/read", "mcp:mail/send"]
+    assert data["missing_scopes"] == ["mcp:mail/read", "mcp:mail/send", "mcp:mail/draft", "mcp:mail/organize"]
     assert "token" not in json.dumps(data).replace("expires", "")
 
 

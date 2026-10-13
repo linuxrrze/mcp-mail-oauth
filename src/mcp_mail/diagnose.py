@@ -72,7 +72,9 @@ def check_claims(claims: dict, *, issuer: str, audience: str, username_claim: st
             "to that client's introspection, so Dovecot rejects the login. Add an Audience "
             "mapper (included client audience) for it to the `mail` client scope."
         )
-    missing = [s for s in TOOL_SCOPES if s not in scopes]
+    # Only the read scope is essential; send/draft/organize are grants an
+    # admin may withhold on purpose (main() lists them as info).
+    missing = [s for s in TOOL_SCOPES[:1] if s not in scopes]
     if missing:
         failures.append(
             f"scope lacks {missing}: those tools will be hidden. Assign the client scopes as "
@@ -169,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{FAIL} {failure}")
     if not failures:
         print(f"{OK} issuer, audience, scopes and {settings.mail.username_claim!r} claim all fine")
+    optional = [s for s in TOOL_SCOPES[1:] if s not in (claims.get("scope") or "").split()]
+    if optional:
+        print(f"{INFO} not granted (their tools stay hidden; fine if intended): {', '.join(optional)}")
 
     mail_credential = token
     if settings.token_exchange:
