@@ -31,7 +31,6 @@ services:
     command: ["sh", "/prepare.sh"]
     volumes:
       - ./init/prepare.sh:/prepare.sh:ro
-      - ../deploy/keycloak/realm-mail.json:/realm-mail.json:ro
       - certs:/out/certs
       - realm:/out/realm
 
@@ -61,6 +60,22 @@ services:
       timeout: 5s
       retries: 60
 
+  # Mail scopes, audience mappers and the dovecot client, created by the
+  # script users run against their own realm (plus an idempotency re-run).
+  keycloak-setup:
+    build:
+      context: ./kcadm
+      args:
+        KEYCLOAK_VERSION: ${KEYCLOAK_VERSION:-26.8.1}
+    image: mcp-mail-test-kcadm:${KEYCLOAK_VERSION:-26.8.1}
+    command: ["bash", "/keycloak-setup.sh"]
+    volumes:
+      - ./init/keycloak-setup.sh:/keycloak-setup.sh:ro
+      - ../deploy/keycloak/setup-kcadm.sh:/setup-kcadm.sh:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
   # Postfix (submission 587, SASL via Dovecot) + Dovecot (IMAPS 993, oauth2,
   # LMTP). The name must match the certificate, as in production.
   mail:
@@ -82,8 +97,8 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-      keycloak:
-        condition: service_healthy
+      keycloak-setup:
+        condition: service_completed_successfully
 
   mcp-mail:
     build:
@@ -95,8 +110,8 @@ services:
     ports:
       - "127.0.0.1:${MCP_PORT:-8000}:8000"
     depends_on:
-      keycloak:
-        condition: service_healthy
+      keycloak-setup:
+        condition: service_completed_successfully
       mail:
         condition: service_healthy
 

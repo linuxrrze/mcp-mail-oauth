@@ -19,15 +19,28 @@ if [ ! -f mail.crt ]; then
   chmod 0600 mail.key   # read by root in the mail container before dropping privileges
 fi
 
-# The realm users deploy (deploy/keycloak/realm-mail.json), with test-only
-# changes: direct access grants on the openwebui client (so the e2e runner can
-# get a user token without a browser) and a second user, bob.
-jq '
-  (.clients[] | select(.clientId == "openwebui") | .directAccessGrantsEnabled) = true
-  | .users += [{
-      username: "bob", enabled: true, emailVerified: true, email: "bob@example.com",
-      firstName: "Bob", lastName: "Example",
-      credentials: [{type: "password", value: "bob", temporary: false}], requiredActions: []
-    }]
-' /realm-mail.json > /out/realm/realm-mail.json
+# A stand-in for "your existing realm": Open WebUI's client and two users,
+# nothing for mail yet. Without a `clientScopes` list, Keycloak creates its
+# built-in scopes (basic, email, profile, offline_access ...) on import, as in
+# any real realm. The mail scopes, the dovecot client and the audience mappers
+# then come from deploy/keycloak/setup-kcadm.sh (service keycloak-setup).
+# Test-only: direct access grants, so the e2e runner gets user tokens
+# without a browser.
+user() {  # username -> user JSON (password = username)
+  jq -n --arg u "$1" '{
+    username: $u, enabled: true, emailVerified: true, email: ($u + "@example.com"),
+    firstName: $u, lastName: "Example",
+    credentials: [{type: "password", value: $u, temporary: false}]
+  }'
+}
+jq -n --argjson alice "$(user alice)" --argjson bob "$(user bob)" '{
+  realm: "mail", enabled: true, sslRequired: "external", accessTokenLifespan: 300,
+  clients: [{
+    clientId: "openwebui", publicClient: false, secret: "openwebui-test-secret",
+    standardFlowEnabled: true, directAccessGrantsEnabled: true,
+    redirectUris: ["http://localhost:3000/oauth/oidc/callback"], webOrigins: ["+"],
+    attributes: {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "+"}
+  }],
+  users: [$alice, $bob]
+}' > /out/realm/realm-mail.json
 echo "test-stack init done"
