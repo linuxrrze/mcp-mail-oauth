@@ -87,7 +87,9 @@ The reasoning behind every choice, including the trade-offs, is in
 Reusing the token is, strictly, the "token pass-through" the MCP
 authorization spec forbids. The default does it deliberately (D4); token
 exchange is the conforming alternative (D23). How to choose:
-[docs/mail-credential.md](docs/mail-credential.md).
+[docs/mail-credential.md](docs/mail-credential.md). How the server relates
+to the rest of the spec, requirement by requirement:
+[docs/mcp-authorization.md](docs/mcp-authorization.md).
 
 ## Tools
 
