@@ -29,7 +29,7 @@ Auth changes also update `docs/mcp-authorization.md` (spec conformance).
 | `scripts/next_version.py` | Next release version from tags + commit messages |
 | `deploy/` | `keycloak/setup-kcadm.sh` (`--exchange`), Dovecot 2.3/2.4 and Postfix snippets, Open WebUI env, Traefik examples |
 | `test-stack/` | Disposable Keycloak + Postfix/Dovecot + server in Docker, configured from `deploy/`; `e2e.py` end-to-end checks |
-| `docs/` | `decisions.md`, `integration.md` (setup walkthrough), `keycloak.md`, `mail-server.md`, `mail-credential.md`, `mcp-authorization.md` (MCP auth spec conformance), `open-webui.md`, `reverse-proxy.md`, `troubleshooting.md`, `ci.md` |
+| `docs/` | `decisions.md`, `integration.md` (setup walkthrough), `keycloak.md`, `keycloak-api.md` (Admin REST API JSON per setup/client), `mail-server.md`, `mail-credential.md`, `mcp-authorization.md` (MCP auth spec conformance), `open-webui.md`, `reverse-proxy.md`, `troubleshooting.md`, `ci.md` |
 
 ## Key patterns
 
@@ -48,7 +48,7 @@ Auth changes also update `docs/mcp-authorization.md` (spec conformance).
   `whoami` needs no scope and reports `missing_scopes`. New tool → pick
   an existing scope or add one in `auth.py`, `setup-kcadm.sh` (including the
   exchange-mode audience mappers), `test-stack`, `docs/keycloak.md` and the
-  README tool table.
+  README tool table (and the scope JSON in `docs/keycloak-api.md`).
 - **Untrusted mail content:** recipients go through `parse_recipients` →
   `email.headerregistry.Address`; header and SMTP envelope are built from
   the same objects (no display-name smuggling). Reply headers from the

@@ -75,7 +75,7 @@ include the sub-directory.
 kcadm.sh config credentials --server https://sso.example.com --realm master --user admin
 ```
 
-Details, a click-through version and the reasons: [keycloak.md](keycloak.md).
+Details, a click-through version and the reasons: [keycloak.md](keycloak.md); Admin REST API JSON: [keycloak-api.md](keycloak-api.md).
 
 ### 1a. Forwarded token (default)
 

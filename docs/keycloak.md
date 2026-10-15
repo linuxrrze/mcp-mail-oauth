@@ -3,7 +3,9 @@
 What the realm needs depends on the **mail credential**: forwarded token
 (default) or token exchange. Pick one first
 ([mail-credential.md](mail-credential.md), with diagrams of both layouts).
-Reasons: [decisions.md](decisions.md) D4, D5, D6, D23.
+Reasons: [decisions.md](decisions.md) D4, D5, D6, D23. Three ways to set it
+up: the script, the admin console, or the Admin REST API with the JSON in
+[keycloak-api.md](keycloak-api.md) (per setup type and client).
 
 ## Common to both
 
@@ -50,6 +52,8 @@ server's `MCP_AUDIENCE`).
 4. *Clients → openwebui → Client scopes → Add client scope*: `mail` and
    the `mcp:mail/*` scopes, each **Default**.
 
+**Admin REST API:** [keycloak-api.md](keycloak-api.md#forwarded-token-default).
+
 **Check:** *Clients → openwebui → Client scopes → Evaluate*, pick a user,
 *Generated access token*:
 
@@ -91,6 +95,8 @@ does no harm, because only `mcp-mail` gets `mail` now.
    scopes → Add client scope* `mail` as **Default**.
 4. *Clients → openwebui → Client scopes*: the `mcp:mail/*` scopes as
    **Default**. **Remove `mail`** if it is assigned.
+
+**Admin REST API:** [keycloak-api.md](keycloak-api.md#token-exchange).
 
 **Check:** the same *Evaluate* view for `openwebui`:
 
@@ -174,6 +180,7 @@ WebUI's "OAuth 2.1" type).
    `<BASE_URL>/auth/callback`, and the scopes `mail` and `mcp:mail/*` as
    Default. Or: `setup-kcadm.sh --proxy https://mcp-mail.example.com`,
    combinable with `--exchange` (one `mcp-mail` client then does both).
+   JSON for both variants: [keycloak-api.md](keycloak-api.md#proxy-mode).
 2. Set `AUTH_MODE=proxy`, `OIDC_CLIENT_ID=mcp-mail`, `OIDC_CLIENT_SECRET`,
    and a long random `JWT_SIGNING_KEY` (D13). Keep the `/data` volume.
 3. `BASE_URL` must now be reachable **by users' browsers** (Keycloak
