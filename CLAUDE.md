@@ -14,6 +14,7 @@ from there back in.
 **`docs/decisions.md` (D1–D25) is the source of truth for *why*.** Read the
 relevant decision before changing auth, scopes, identity, TLS or
 packaging, and add or update a decision when you change one of those.
+Auth changes also update `docs/mcp-authorization.md` (spec conformance).
 
 ## Layout
 
@@ -28,7 +29,7 @@ packaging, and add or update a decision when you change one of those.
 | `scripts/next_version.py` | Next release version from tags + commit messages |
 | `deploy/` | `keycloak/setup-kcadm.sh` (`--exchange`), Dovecot 2.3/2.4 and Postfix snippets, Open WebUI env, Traefik examples |
 | `test-stack/` | Disposable Keycloak + Postfix/Dovecot + server in Docker, configured from `deploy/`; `e2e.py` end-to-end checks |
-| `docs/` | `decisions.md`, `integration.md` (setup walkthrough), `keycloak.md`, `mail-server.md`, `mail-credential.md`, `open-webui.md`, `reverse-proxy.md`, `troubleshooting.md`, `ci.md` |
+| `docs/` | `decisions.md`, `integration.md` (setup walkthrough), `keycloak.md`, `mail-server.md`, `mail-credential.md`, `mcp-authorization.md` (MCP auth spec conformance), `open-webui.md`, `reverse-proxy.md`, `troubleshooting.md`, `ci.md` |
 
 ## Key patterns
 
